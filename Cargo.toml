@@ -1,5 +1,5 @@
 [workspace]
-members = []
+members = ["cli", "entangler", "storage"]
 resolver = "2"
 
 [workspace.package]
@@ -21,7 +21,24 @@ keywords = [
 version = "0.1.0"
 
 [workspace.dependencies]
+anyhow = "1.0.82"
+async-trait = "0.1.80"
+bytes = "1.6.0"
 cid = { version = "0.10.1", default-features = false, features = [
     "serde-codec",
     "std",
 ] }
+clap = { version = "4.1.14", features = [
+    "color",
+    "derive",
+    "env",
+    "string",
+    "unicode",
+] }
+clap-stdin = { version = "0.4.0", features = ["tokio"] }
+iroh = "0.22"
+serde = { version = "1.0.197", features = ["derive"] }
+serde_json = "1.0.115"
+stderrlog = "0.6.0"
+thiserror = "1"
+tokio = { version = "1.37.0", features = ["fs", "macros", "rt-multi-thread"] }
