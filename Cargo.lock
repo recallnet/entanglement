@@ -257,6 +257,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bao"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3663af8a469bf3a2d818b8c1a7b62e4dc55c4547b4c14f5dab35fc9e707bef83"
+dependencies = [
+ "arrayref",
+ "arrayvec",
+ "blake3",
+]
+
+[[package]]
 name = "bao-tree"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -343,6 +354,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "blake3"
+version = "1.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9ec96fe9a81b5e365f9db71fe00edc4fe4ca2cc7dcb7861f0603012a7caa210"
+dependencies = [
+ "arrayref",
+ "arrayvec",
+ "cc",
+ "cfg-if",
+ "constant_time_eq",
+]
+
+[[package]]
 name = "block-buffer"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -414,6 +438,16 @@ dependencies = [
  "serde",
  "wasm-bindgen",
  "windows-targets 0.52.6",
+]
+
+[[package]]
+name = "chunker"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bao",
+ "blake3",
+ "bytes",
 ]
 
 [[package]]
@@ -959,6 +993,8 @@ name = "entangler"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
+ "chunker",
  "cid",
  "serde",
  "serde_json",
@@ -2639,7 +2675,7 @@ version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af1844ef2428cc3e1cb900be36181049ef3d3193c63e43026cfe202983b27a56"
 dependencies = [
- "proc-macro-crate 1.1.3",
+ "proc-macro-crate 3.1.0",
  "proc-macro2",
  "quote",
  "syn 2.0.72",
