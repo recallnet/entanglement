@@ -109,6 +109,17 @@ impl Grid {
     pub fn get_height(&self) -> usize {
         self.data[0].len()
     }
+
+    pub fn assemble_data(&self) -> Bytes {
+        let mut data =
+            Vec::with_capacity(self.get_width() * self.get_height() * self.get_cell(0, 0).len());
+        for col in &self.data {
+            for cell in col {
+                data.extend_from_slice(cell.as_ref());
+            }
+        }
+        Bytes::from(data)
+    }
 }
 
 #[cfg(test)]
@@ -202,6 +213,7 @@ mod tests {
             Bytes::from("u"),
             Bytes::from("v"),
         ];
+        
         let grid = Grid::new(data, 3, 3).unwrap();
 
         //    0 1 2 3 4 5 6 7 8 x
@@ -325,5 +337,113 @@ mod tests {
                 value
             );
         }
+    }
+
+    #[test]
+    fn test_assemble_data() {
+        let data = vec![
+            Bytes::from("a"),
+            Bytes::from("b"),
+            Bytes::from("c"),
+            Bytes::from("d"),
+        ];
+        let grid = Grid::new(data.clone(), 2, 2).unwrap();
+        let assembled_data = grid.assemble_data();
+        let expected_data = Bytes::from("abcd");
+        assert_eq!(
+            assembled_data, expected_data,
+            "Assembled data should be 'abcd'"
+        );
+    }
+
+    #[test]
+    fn test_assemble_data_with_padding() {
+        let data = vec![Bytes::from("a"), Bytes::from("b"), Bytes::from("c")];
+        let grid = Grid::new(data.clone(), 2, 2).unwrap();
+        let assembled_data = grid.assemble_data();
+        let expected_data = Bytes::from("abca");
+        assert_eq!(
+            assembled_data, expected_data,
+            "Assembled data should be 'abca'"
+        );
+    }
+
+    #[test]
+    fn test_assemble_data_large_grid() {
+        let data = vec![
+            Bytes::from("a"),
+            Bytes::from("b"),
+            Bytes::from("c"),
+            Bytes::from("d"),
+            Bytes::from("e"),
+            Bytes::from("f"),
+            Bytes::from("g"),
+            Bytes::from("h"),
+            Bytes::from("i"),
+        ];
+        let grid = Grid::new(data.clone(), 3, 3).unwrap();
+        let assembled_data = grid.assemble_data();
+        let expected_data = Bytes::from("abcdefghi");
+        assert_eq!(
+            assembled_data, expected_data,
+            "Assembled data should be 'abcdefghi'"
+        );
+    }
+
+    #[test]
+    fn test_grid_with_num_chunks_less_than_dimension() {
+        let data = vec![
+            Bytes::from("a"),
+            Bytes::from("b"),
+            Bytes::from("c"),
+            Bytes::from("d"),
+            Bytes::from("e"),
+            Bytes::from("f"),
+            Bytes::from("g"),
+            Bytes::from("h"),
+        ];
+        let grid = Grid::new(data.clone(), 3, 3).unwrap();
+        assert_eq!(grid.get_width(), 3, "Grid width should be 3");
+        assert_eq!(grid.get_height(), 3, "Grid height should be 3");
+        assert_eq!(
+            grid.get_cell(0, 0),
+            &data[0],
+            "Cell (0, 0) should contain 'a'"
+        );
+        assert_eq!(
+            grid.get_cell(0, 1),
+            &data[1],
+            "Cell (0, 1) should contain 'b'"
+        );
+        assert_eq!(
+            grid.get_cell(1, 0),
+            &data[2],
+            "Cell (1, 0) should contain 'c'"
+        );
+        assert_eq!(
+            grid.get_cell(1, 1),
+            &data[3],
+            "Cell (1, 1) should contain 'd'"
+        );
+        assert_eq!(
+            grid.get_cell(2, 0),
+            &data[4],
+            "Cell (2, 0) should contain 'e'"
+        );
+        assert_eq!(
+            grid.get_cell(2, 1),
+            &data[5],
+            "Cell (2, 1) should contain 'f'"
+        );
+        assert_eq!(
+            grid.get_cell(0, 2),
+            &data[6],
+            "Cell (0, 2) should contain 'g'"
+        );
+        assert_eq!(
+            grid.get_cell(1, 2),
+            &data[7],
+            "Cell (1, 2) should contain 'h'"
+        );
     }
 }
