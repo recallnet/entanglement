@@ -200,10 +200,6 @@ mod tests {
 
         assert_eq!(lattice.get_parities().len(), 3);
 
-        // a e i .
-        // b f . .
-        // c g . .
-        // d h . .
         let lh_strand = lattice.get_parities().get(0).unwrap();
         assert_eq!(lh_strand.strand_type, StrandType::Left);
         assert_eq!(lh_strand.grid.get_cell(0, 0), &entangle("a", "h"));
@@ -239,5 +235,78 @@ mod tests {
         assert_eq!(rh_strand.grid.get_cell(1, 2), &entangle("g", "b"));
         assert_eq!(rh_strand.grid.get_cell(1, 3), &entangle("h", "i"));
         assert_eq!(rh_strand.grid.get_cell(2, 0), &entangle("i", "c"));
+    }
+
+    #[test]
+    fn test_execute_with_large_data() {
+        // we choose 18 chunks of 8 bytes each and create a grid with 3x6 cells
+        // so that there are no holes in the grid and we can safely call get_cell
+        let chunks = vec![
+            Bytes::from(vec![0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF]),
+            Bytes::from(vec![0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE]),
+            Bytes::from(vec![0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x07, 0x18]),
+            Bytes::from(vec![0x2A, 0x3B, 0x4C, 0x5D, 0x6E, 0x7F, 0x80, 0x91]),
+            Bytes::from(vec![0x19, 0x28, 0x37, 0x46, 0x55, 0x64, 0x73, 0x82]),
+            Bytes::from(vec![0x91, 0xA2, 0xB3, 0xC4, 0xD5, 0xE6, 0xF7, 0x08]),
+            Bytes::from(vec![0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11]),
+            Bytes::from(vec![0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99]),
+            Bytes::from(vec![0xAB, 0xCD, 0xEF, 0x01, 0x23, 0x45, 0x67, 0x89]),
+            Bytes::from(vec![0xFE, 0xDC, 0xBA, 0x98, 0x76, 0x54, 0x32, 0x10]),
+            Bytes::from(vec![0x13, 0x57, 0x9B, 0xDF, 0x24, 0x68, 0xAC, 0xE0]),
+            Bytes::from(vec![0xF1, 0xE2, 0xD3, 0xC4, 0xB5, 0xA6, 0x97, 0x88]),
+            Bytes::from(vec![0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]),
+            Bytes::from(vec![0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00]),
+            Bytes::from(vec![0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0]),
+            Bytes::from(vec![0x0F, 0x1E, 0x2D, 0x3C, 0x4B, 0x5A, 0x69, 0x78]),
+            Bytes::from(vec![0x87, 0x96, 0xA5, 0xB4, 0xC3, 0xD2, 0xE1, 0xF0]),
+            Bytes::from(vec![0x1A, 0x2B, 0x3C, 0x4D, 0x5E, 0x6F, 0x70, 0x81]),
+        ];
+        const HEIGHT: usize = 3;
+        const WIDTH: usize = 6;
+        let grid = Grid::new(chunks.clone(), HEIGHT).unwrap();
+
+        let executer = Executer::new(3);
+        let lattice = executer.execute(grid).unwrap();
+
+        assert_eq!(lattice.get_parities().len(), HEIGHT);
+
+        let orig_grid = lattice.get_orig_grid();
+
+        for parity_grid in lattice.get_parities() {
+            let assembled_data = parity_grid.grid.assemble_data();
+            assert_eq!(assembled_data.len(), WIDTH * HEIGHT * 8);
+
+            for x in 0..WIDTH as i64 {
+                for y in 0..HEIGHT as i64 {
+                    let next_x = x + 1;
+                    let next_y = y as i64 + parity_grid.strand_type.to_i64();
+                    let orig_cell1 = orig_grid.get_cell(x, y);
+                    let orig_cell2 = orig_grid.get_cell(next_x, next_y);
+                    let expected = entangle_chunks(orig_cell1, orig_cell2);
+                    let cell = parity_grid.grid.get_cell(x, y);
+                    assert_eq!(
+                        cell,
+                        &expected,
+                        "Parity grid mismatch at coordinate ({}, {})\n\
+                         Parity type: {:?}\n\
+                         Actual parity cell value: {:?}\n\
+                         Expected parity cell value: {:?}\n\
+                         Original grid cell 1 at ({}, {}): {:?}\n\
+                         Original grid cell 2 at ({}, {}): {:?}",
+                        x,
+                        y,
+                        parity_grid.strand_type,
+                        cell,
+                        expected,
+                        x,
+                        y,
+                        orig_cell1,
+                        next_x,
+                        next_y,
+                        orig_cell2
+                    );
+                }
+            }
+        }
     }
 }
