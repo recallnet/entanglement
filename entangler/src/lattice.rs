@@ -1,13 +1,10 @@
 // Copyright 2024 Entanglement Contributors
 // SPDX-License-Identifier: Apache-2.0, MIT
 
-use bytes::Bytes;
-use thiserror::Error;
-
 use crate::grid::Grid;
-use anyhow::Result;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum StrandType {
     Left,
     Horizontal,
@@ -40,6 +37,10 @@ impl Lattice {
             orig_grid,
             parity_grids,
         }
+    }
+
+    pub fn get_orig_grid(&self) -> &Grid {
+        &self.orig_grid
     }
 
     pub fn get_parities(&self) -> &Vec<ParityGrid> {

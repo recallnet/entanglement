@@ -5,6 +5,5 @@ pub mod entangler;
 pub use entangler::*;
 
 mod executer;
-mod lattice;
 mod grid;
-mod chunker;
+mod lattice;
