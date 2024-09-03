@@ -11,9 +11,7 @@ const WIDTH: usize = 6;
 const NUM_CHUNKS: usize = HEIGHT * WIDTH;
 const CHUNK_SIZE: usize = 1024;
 
-// create Bytes of given n 1024-sized chunks
-// every byte in a chunk has a value of previous byte + 1 % 256
-// first chunk starts with 0. Next chunk starts with previous chunk's first byte + 10 % 256
+// create Bytes of n 1024-sized chunks
 fn create_bytes(n: usize) -> Bytes {
     let mut bytes = BytesMut::with_capacity(n * CHUNK_SIZE);
     for i in 0..n {
@@ -74,4 +72,17 @@ async fn test_upload_bytes_to_iroh() {
         }
         assert_eq!(parity, expected_parity);
     }
+}
+
+#[tokio::test]
+async fn test_download_bytes_from_iroh() {
+    let node = iroh::node::Node::memory().spawn().await.unwrap();
+    let st = storage::iroh::IrohStorage::from_client(node.client().clone());
+    let ent = entangler::Entangler::new(st, 3, HEIGHT as u8, HEIGHT as u8).unwrap();
+
+    let bytes = create_bytes(NUM_CHUNKS);
+    let hashes = ent.upload_bytes(bytes.clone()).await.unwrap();
+
+    let downloaded_bytes = ent.download_bytes(&hashes.0).await.unwrap();
+    assert_eq!(downloaded_bytes, bytes, "downloaded data mismatch");
 }
