@@ -7,12 +7,10 @@ use thiserror;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
-    #[error("Invalid width: {0}")]
-    InvalidWidth(usize),
-    #[error("Input vector is empty")]
-    EmptyInput,
-    #[error("Invalid number of items: {0}")]
-    InvalidNumItems(usize),
+    #[error("Invalid height: {0}")]
+    InvalidHeight(usize),
+    #[error("Can not create grid with height {1} out of {0} items")]
+    InvalidNumItems(usize, usize),
 }
 
 /// Grid represents a 2D grid of chunks built in column-first order.
@@ -36,11 +34,11 @@ pub struct Grid {
 }
 
 fn build_column_first_grid(data: Vec<Bytes>, height: usize) -> Result<Vec<Vec<Bytes>>, Error> {
-    if data.is_empty() {
-        return Err(Error::EmptyInput);
-    }
     if height == 0 {
-        return Err(Error::InvalidWidth(height));
+        return Err(Error::InvalidHeight(height));
+    }
+    if data.len() < height {
+        return Err(Error::InvalidNumItems(data.len(), height));
     }
 
     let num_cols = (data.len() + height - 1) / height;
@@ -138,11 +136,11 @@ pub struct GridBuilder {
 impl GridBuilder {
     /// Creates a new GridBuilder with the given number of items and height.
     pub fn new(num_items: usize, height: usize) -> Result<Self, Error> {
-        if num_items == 0 {
-            return Err(Error::InvalidNumItems(num_items));
-        }
         if height == 0 {
-            return Err(Error::InvalidWidth(height));
+            return Err(Error::InvalidHeight(height));
+        }
+        if num_items < height {
+            return Err(Error::InvalidNumItems(num_items, height));
         }
 
         let num_cols = (num_items + height - 1) / height;
@@ -224,19 +222,29 @@ mod tests {
     }
 
     #[test]
-    fn test_grid_new_empty_input() {
-        let data = vec![];
-        let result = Grid::new(data, 2);
+    fn if_input_is_empty_error() {
+        let result = Grid::new(vec![], 2);
         assert!(result.is_err(), "Expected an error for empty input");
-        assert_eq!(result.unwrap_err().to_string(), "Input vector is empty");
+        assert!(matches!(result.unwrap_err(), Error::InvalidNumItems(0, 2)));
     }
 
     #[test]
-    fn test_grid_new_invalid_width() {
+    fn if_fewer_chunks_than_height_error() {
+        let result = Grid::new(vec![Bytes::from("a"), Bytes::from("b")], 3);
+        assert!(result.is_err(), "Expected an error");
+        assert!(matches!(result.unwrap_err(), Error::InvalidNumItems(2, 3)));
+
+        let result = Grid::new(vec![Bytes::from("a")], 3);
+        assert!(result.is_err(), "Expected an error");
+        assert!(matches!(result.unwrap_err(), Error::InvalidNumItems(1, 3)));
+    }
+
+    #[test]
+    fn if_invalid_height_error() {
         let data = vec![Bytes::from("a"), Bytes::from("b")];
         let result = Grid::new(data, 0);
-        assert!(result.is_err(), "Expected an error for invalid width");
-        assert_eq!(result.unwrap_err().to_string(), "Invalid width: 0");
+        assert!(result.is_err(), "Expected an error for invalid height");
+        assert!(matches!(result.unwrap_err(), Error::InvalidHeight(0)));
     }
 
     #[test]
@@ -314,15 +322,7 @@ mod tests {
 
     #[test]
     fn test_grid_width_height() {
-        let test_cases = vec![
-            (1, 7, 1),
-            (2, 4, 2),
-            (3, 3, 3),
-            (4, 2, 4),
-            (7, 1, 7),
-            (8, 1, 7),
-            (16, 1, 7),
-        ];
+        let test_cases = vec![(1, 7, 1), (2, 4, 2), (3, 3, 3), (4, 2, 4), (7, 1, 7)];
 
         for (height, expected_width, expected_height) in test_cases {
             let grid = Grid::new(create_ag_chunks(), height).unwrap();
@@ -423,19 +423,27 @@ mod tests {
     fn test_grid_builder_invalid_width() {
         let result = GridBuilder::new(5, 0);
         assert!(result.is_err(), "Expected an error for invalid width");
-        assert_eq!(result.unwrap_err().to_string(), "Invalid width: 0");
+        assert!(matches!(result.unwrap_err(), Error::InvalidHeight(0)));
     }
 
     #[test]
     fn test_grid_builder_invalid_num_items() {
-        let result = GridBuilder::new(0, 3);
-        assert!(
-            result.is_err(),
-            "Expected an error for invalid number of items"
-        );
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "Invalid number of items: 0"
-        );
+        let test_cases = vec![(0, 3), (1, 3), (2, 3)];
+
+        for (num_items, num_columns) in test_cases {
+            let result = GridBuilder::new(num_items, num_columns);
+            assert!(
+                result.is_err(),
+                "Expected an error for invalid number of items: {} items, {} columns",
+                num_items,
+                num_columns
+            );
+            assert!(
+                matches!(result.unwrap_err(), Error::InvalidNumItems(i, c) if i == num_items && c == num_columns),
+                "Expected InvalidNumItems error for {} items and {} columns",
+                num_items,
+                num_columns
+            );
+        }
     }
 }

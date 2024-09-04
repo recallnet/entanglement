@@ -77,8 +77,9 @@ impl<T: Storage> Entangler<T> {
     pub async fn upload_bytes(&self, bytes: impl Into<Bytes> + Send) -> Result<(String, String)> {
         let bytes: Bytes = bytes.into();
         let chunks = bytes_to_chunks(bytes.clone(), CHUNK_SIZE);
+        let num_chunks = chunks.len();
 
-        let orig_grid = Grid::new(chunks, self.s as usize)?;
+        let orig_grid = Grid::new(chunks, usize::min(self.s as usize, num_chunks))?;
 
         let exec = executer::Executer::new(self.alpha);
         let lattice = exec.execute(orig_grid)?;
