@@ -113,6 +113,8 @@ impl<T: Storage> Entangler<T> {
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use futures::Stream;
+    use std::pin::Pin;
 
     struct MockStorage;
 
@@ -121,8 +123,17 @@ mod tests {
         async fn upload_bytes(&self, _: impl Into<Bytes> + Send) -> Result<String> {
             Ok("mock_hash".to_string())
         }
+
         async fn download_bytes(&self, _: &str) -> Result<Bytes> {
             Ok(Bytes::from("mock data"))
+        }
+
+        async fn iter_chunks(
+            &self,
+            _: &str,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<Bytes>> + Send>>> {
+            let chunks = vec![Bytes::from("mock data")];
+            Ok(Box::pin(futures::stream::iter(chunks.into_iter().map(Ok))))
         }
     }
 
