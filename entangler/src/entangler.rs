@@ -3,13 +3,14 @@
 
 use anyhow::Result;
 use bytes::Bytes;
-use serde::{Deserialize, Serialize};
+use futures::StreamExt;
 use std::collections::HashMap;
-use storage::Storage;
+use storage::{ByteStream, Error as StorageError, Storage};
 
 use crate::executer;
 use crate::grid::Grid;
-use crate::lattice::StrandType;
+use crate::metadata::Metadata;
+use crate::repairer::Repairer;
 
 const CHUNK_SIZE: usize = 1024;
 
@@ -47,14 +48,22 @@ pub struct Entangler<T: Storage> {
 pub enum Error {
     #[error("Invalid parameter {0}: {1}")]
     InvalidEntanglementParameter(String, u8),
+
     #[error("Input vector is empty")]
     EmptyInput,
-}
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Metadata {
-    pub orig_hash: String,
-    pub parity_hashes: HashMap<StrandType, String>,
+    #[error("Failed to download a blob with hash {hash}: {source}")]
+    FailedToDownload {
+        hash: String,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
+    #[error("Storage error: {0}")]
+    StorageError(#[from] StorageError),
+
+    #[error("Failed to parse metadata: {0}")]
+    ParsingMetadata(#[from] serde_json::Error),
 }
 
 impl<T: Storage> Entangler<T> {
@@ -74,7 +83,7 @@ impl<T: Storage> Entangler<T> {
         Ok(Self { storage, alpha, s })
     }
 
-    pub async fn upload_bytes(&self, bytes: impl Into<Bytes> + Send) -> Result<(String, String)> {
+    pub async fn upload(&self, bytes: impl Into<Bytes> + Send) -> Result<(String, String)> {
         let bytes: Bytes = bytes.into();
         let chunks = bytes_to_chunks(bytes.clone(), CHUNK_SIZE);
         let num_chunks = chunks.len();
@@ -84,6 +93,7 @@ impl<T: Storage> Entangler<T> {
         let exec = executer::Executer::new(self.alpha);
         let lattice = exec.execute(orig_grid)?;
 
+        let num_bytes = bytes.len();
         let orig_hash = self.storage.upload_bytes(bytes).await?;
 
         let mut parity_hashes = HashMap::new();
@@ -96,6 +106,10 @@ impl<T: Storage> Entangler<T> {
         let metadata = Metadata {
             orig_hash: orig_hash.clone(),
             parity_hashes,
+            num_bytes: num_bytes as u64,
+            chunk_size: CHUNK_SIZE as u64,
+            s: self.s,
+            p: self.s,
         };
 
         let metadata = serde_json::to_string(&metadata).unwrap();
@@ -104,8 +118,74 @@ impl<T: Storage> Entangler<T> {
         Ok((orig_hash, metadata_hash))
     }
 
-    pub async fn download_bytes(&self, hash: &str) -> Result<Bytes> {
-        self.storage.download_bytes(hash).await
+    pub async fn download(&self, hash: &str, metadata_hash: Option<&str>) -> Result<Bytes, Error> {
+        match (self.storage.download_bytes(hash).await, metadata_hash) {
+            (Ok(data), _) => Ok(data),
+            (Err(_), Some(metadata_hash)) => self.download_repaired(hash, metadata_hash).await,
+            (Err(e), _) => Err(Error::FailedToDownload {
+                hash: hash.to_string(),
+                source: e.into(),
+            }),
+        }
+    }
+
+    async fn download_metadata(&self, metadata_hash: &str) -> Result<Metadata, Error> {
+        let metadata_bytes = self.storage.download_bytes(metadata_hash).await?;
+        Ok(serde_json::from_slice(&metadata_bytes)?)
+    }
+
+    async fn download_repaired(&self, hash: &str, metadata_hash: &str) -> Result<Bytes, Error> {
+        let metadata = self.download_metadata(metadata_hash).await?;
+
+        match self.storage.iter_chunks(hash).await {
+            Ok(stream) => {
+                let missing_chunks = self.find_missing_chunks(stream).await?;
+                self.repair_chunks(metadata, missing_chunks).await
+            }
+            //Err(StorageError::BlobNotFound(_)) => self.repair_blob(metadata).await,
+            Err(e) => return Err(Error::StorageError(e.into())),
+        }
+    }
+
+    /*async fn repair_blob(&self, metadata: Metadata) -> Result<Bytes, Error> {
+        let num_chunks = (metadata.num_bytes as usize + CHUNK_SIZE - 1) / CHUNK_SIZE;
+        let missing_chunks: Vec<usize> = (0..num_chunks).collect();
+        self.repair_chunks(metadata, missing_chunks).await
+    }*/
+
+    async fn find_missing_chunks(&self, mut stream: ByteStream) -> Result<Vec<usize>, Error> {
+        let mut missing_chunks = Vec::new();
+        let mut index = 0;
+
+        while let Some(chunk_result) = stream.next().await {
+            match chunk_result {
+                Ok(_) => (),
+                Err(_) => missing_chunks.push(index),
+            }
+            index += 1;
+        }
+
+        Ok(missing_chunks)
+    }
+
+    async fn repair_chunks(
+        &self,
+        metadata: Metadata,
+        missing_chunks: Vec<usize>,
+    ) -> std::result::Result<Bytes, Error> {
+        let mut chunks = Vec::new();
+        let num_chunks = (metadata.num_bytes as usize + CHUNK_SIZE - 1) / CHUNK_SIZE;
+        chunks.resize(num_chunks, Bytes::new());
+
+        let repaired_chunks = Repairer::new(self.storage.clone(), metadata)
+            .repair_chunks(missing_chunks.clone())
+            .await?;
+
+        for (i, chunk) in repaired_chunks.into_iter().enumerate() {
+            chunks[missing_chunks[i]] = chunk;
+        }
+
+        Ok(Bytes::from(chunks.concat()))
     }
 }
 
@@ -116,6 +196,7 @@ mod tests {
     use futures::Stream;
     use std::pin::Pin;
 
+    #[derive(Clone)]
     struct MockStorage;
 
     #[async_trait]
@@ -124,14 +205,14 @@ mod tests {
             Ok("mock_hash".to_string())
         }
 
-        async fn download_bytes(&self, _: &str) -> Result<Bytes> {
+        async fn download_bytes(&self, _: &str) -> Result<Bytes, StorageError> {
             Ok(Bytes::from("mock data"))
         }
 
         async fn iter_chunks(
             &self,
             _: &str,
-        ) -> Result<Pin<Box<dyn Stream<Item = Result<Bytes>> + Send>>> {
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<Bytes>> + Send>>, StorageError> {
             let chunks = vec![Bytes::from("mock data")];
             Ok(Box::pin(futures::stream::iter(chunks.into_iter().map(Ok))))
         }

@@ -8,7 +8,7 @@ use std::str::FromStr;
 use stderrlog::Timestamp;
 
 use entangler::Entangler;
-use storage::{iroh::IrohStorage, Storage};
+use storage::iroh::IrohStorage;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -55,6 +55,8 @@ struct UploadArgs {
 struct DownloadArgs {
     #[arg(long)]
     hash: String,
+    #[arg(long)]
+    metadata_hash: Option<String>,
     #[arg(short, long)]
     output: String,
 }
@@ -114,13 +116,15 @@ async fn main() -> anyhow::Result<()> {
                 args.file,
                 bytes.len()
             );
-            let (file_hash, meta_hash) = entangler.upload_bytes(bytes).await?;
+            let (file_hash, meta_hash) = entangler.upload(bytes).await?;
             print!("uploaded file. Hash: {}, Meta: {}\n", file_hash, meta_hash);
         }
         Commands::Download(args) => {
-            //let bytes = storage.download_bytes(&args.hash).await?;
-            //tokio::fs::write(args.output, bytes).await?;
-            //print!("downloaded file\n");
+            let bytes = entangler
+                .download(&args.hash, args.metadata_hash.as_deref())
+                .await?;
+            tokio::fs::write(args.output, bytes).await?;
+            print!("downloaded file\n");
         }
     }
 

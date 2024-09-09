@@ -27,7 +27,7 @@ impl Executer {
         for i in 0..self.alpha as usize {
             parity_grids.push(create_parity_grid(&grid, strand_types[i])?);
         }
-        return Ok(Lattice::new(grid, parity_grids));
+        return Ok(Lattice::new(parity_grids));
     }
 }
 
@@ -153,18 +153,17 @@ mod tests {
         let grid = Grid::new(create_chunks(), 3).unwrap();
 
         let executer = Executer::new(3);
-        let lattice = executer.execute(grid).unwrap();
+        let lattice = executer.execute(grid.clone()).unwrap();
 
-        let orig_grid = lattice.get_orig_grid();
-        assert_eq!(orig_grid.get_cell(0, 0), &Bytes::from("a"));
-        assert_eq!(orig_grid.get_cell(0, 1), &Bytes::from("b"));
-        assert_eq!(orig_grid.get_cell(0, 2), &Bytes::from("c"));
-        assert_eq!(orig_grid.get_cell(1, 0), &Bytes::from("d"));
-        assert_eq!(orig_grid.get_cell(1, 1), &Bytes::from("e"));
-        assert_eq!(orig_grid.get_cell(1, 2), &Bytes::from("f"));
-        assert_eq!(orig_grid.get_cell(2, 0), &Bytes::from("g"));
-        assert_eq!(orig_grid.get_cell(2, 1), &Bytes::from("h"));
-        assert_eq!(orig_grid.get_cell(2, 2), &Bytes::from("i"));
+        assert_eq!(grid.get_cell(0, 0), &Bytes::from("a"));
+        assert_eq!(grid.get_cell(0, 1), &Bytes::from("b"));
+        assert_eq!(grid.get_cell(0, 2), &Bytes::from("c"));
+        assert_eq!(grid.get_cell(1, 0), &Bytes::from("d"));
+        assert_eq!(grid.get_cell(1, 1), &Bytes::from("e"));
+        assert_eq!(grid.get_cell(1, 2), &Bytes::from("f"));
+        assert_eq!(grid.get_cell(2, 0), &Bytes::from("g"));
+        assert_eq!(grid.get_cell(2, 1), &Bytes::from("h"));
+        assert_eq!(grid.get_cell(2, 2), &Bytes::from("i"));
 
         assert_eq!(lattice.get_parities().len(), 3);
 
@@ -183,20 +182,19 @@ mod tests {
         let grid = Grid::new(create_chunks(), 4).unwrap();
 
         let executer = Executer::new(3);
-        let lattice = executer.execute(grid).unwrap();
+        let lattice = executer.execute(grid.clone()).unwrap();
 
-        let orig_grid = lattice.get_orig_grid();
-        assert_eq!(orig_grid.get_cell(0, 0), &Bytes::from("a"));
-        assert_eq!(orig_grid.get_cell(0, 1), &Bytes::from("b"));
-        assert_eq!(orig_grid.get_cell(0, 2), &Bytes::from("c"));
-        assert_eq!(orig_grid.get_cell(0, 3), &Bytes::from("d"));
+        assert_eq!(grid.get_cell(0, 0), &Bytes::from("a"));
+        assert_eq!(grid.get_cell(0, 1), &Bytes::from("b"));
+        assert_eq!(grid.get_cell(0, 2), &Bytes::from("c"));
+        assert_eq!(grid.get_cell(0, 3), &Bytes::from("d"));
 
-        assert_eq!(orig_grid.get_cell(1, 0), &Bytes::from("e"));
-        assert_eq!(orig_grid.get_cell(1, 1), &Bytes::from("f"));
-        assert_eq!(orig_grid.get_cell(1, 2), &Bytes::from("g"));
-        assert_eq!(orig_grid.get_cell(1, 3), &Bytes::from("h"));
+        assert_eq!(grid.get_cell(1, 0), &Bytes::from("e"));
+        assert_eq!(grid.get_cell(1, 1), &Bytes::from("f"));
+        assert_eq!(grid.get_cell(1, 2), &Bytes::from("g"));
+        assert_eq!(grid.get_cell(1, 3), &Bytes::from("h"));
 
-        assert_eq!(orig_grid.get_cell(2, 0), &Bytes::from("i"));
+        assert_eq!(grid.get_cell(2, 0), &Bytes::from("i"));
 
         assert_eq!(lattice.get_parities().len(), 3);
 
@@ -266,11 +264,9 @@ mod tests {
         let grid = Grid::new(chunks.clone(), HEIGHT).unwrap();
 
         let executer = Executer::new(3);
-        let lattice = executer.execute(grid).unwrap();
+        let lattice = executer.execute(grid.clone()).unwrap();
 
         assert_eq!(lattice.get_parities().len(), HEIGHT);
-
-        let orig_grid = lattice.get_orig_grid();
 
         for parity_grid in lattice.get_parities() {
             let assembled_data = parity_grid.grid.assemble_data();
@@ -280,8 +276,8 @@ mod tests {
                 for y in 0..HEIGHT as i64 {
                     let next_x = x + 1;
                     let next_y = y as i64 + parity_grid.strand_type.to_i64();
-                    let orig_cell1 = orig_grid.get_cell(x, y);
-                    let orig_cell2 = orig_grid.get_cell(next_x, next_y);
+                    let orig_cell1 = grid.get_cell(x, y);
+                    let orig_cell2 = grid.get_cell(next_x, next_y);
                     let expected = entangle_chunks(orig_cell1, orig_cell2);
                     let cell = parity_grid.grid.get_cell(x, y);
                     assert_eq!(

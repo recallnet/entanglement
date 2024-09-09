@@ -26,7 +26,7 @@ pub enum Error {
 ///    - Grid with 7 items and height 4 would have 2 columns and 4 rows. Here we have 2 columns
 /// and LW width = 4. So, when wrapping, the grid will consider 4 columns and wrap around to
 /// the first column.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Grid {
     data: Vec<Vec<Bytes>>,
     num_items: usize,
@@ -71,6 +71,17 @@ impl Grid {
             num_items,
             lw_aligned_width: calculate_lw_aligned_width(num_items, height),
         })
+    }
+
+    pub fn from_bytes(data: Bytes, height: usize, chunk_size: usize) -> Result<Self, Error> {
+        let num_items = (data.len() + chunk_size - 1) / chunk_size;
+        let mut chunks = Vec::new();
+        for i in 0..num_items {
+            let start = i * chunk_size;
+            let end = usize::min((i + 1) * chunk_size, data.len());
+            chunks.push(data.slice(start..end));
+        }
+        Self::new(chunks, height)
     }
 
     pub fn get_cell(&self, x: i64, y: i64) -> &Bytes {
@@ -219,6 +230,20 @@ mod tests {
             &data[3],
             "Cell (1, 1) should contain 'd'"
         );
+    }
+
+    #[test]
+    fn test_grid_from_bytes() {
+        let data = Bytes::from("abcdefghi");
+        let grid = Grid::from_bytes(data.clone(), 3, 2).unwrap();
+        assert_eq!(grid.get_width(), 2, "Grid width should be 2");
+        assert_eq!(grid.get_height(), 3, "Grid height should be 3");
+        assert_eq!(grid.get_num_items(), 5, "Grid should have 7 items");
+        assert_eq!(grid.get_cell(0, 0), &Bytes::from("ab"));
+        assert_eq!(grid.get_cell(0, 1), &Bytes::from("cd"));
+        assert_eq!(grid.get_cell(0, 2), &Bytes::from("ef"));
+        assert_eq!(grid.get_cell(1, 0), &Bytes::from("gh"));
+        assert_eq!(grid.get_cell(1, 1), &Bytes::from("i"));
     }
 
     #[test]
