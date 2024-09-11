@@ -5,5 +5,5 @@ pub mod iroh;
 pub mod storage;
 pub use storage::*;
 
-#[cfg(feature = "mock")]
+#[cfg(any(test, feature = "mock"))]
 pub mod mock;

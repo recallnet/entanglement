@@ -105,3 +105,170 @@ impl Storage for FakeStorage {
         Ok(Box::pin(stream))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::StreamExt;
+
+    #[tokio::test]
+    async fn test_upload_and_download_bytes() -> Result<()> {
+        let storage = FakeStorage::new();
+        let data = b"Hello, world!".to_vec();
+        let hash = storage.upload_bytes(data.clone()).await?;
+
+        let downloaded = storage.download_bytes(&hash).await?;
+        assert_eq!(data, downloaded);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_download_non_existent_blob() {
+        let storage = FakeStorage::new();
+        let result = storage.download_bytes("non_existent_hash").await;
+        assert!(matches!(result, Err(StorageError::BlobNotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn test_fake_failed_download() -> Result<()> {
+        let storage = FakeStorage::new();
+        let data = b"Test data".to_vec();
+        let hash = storage.upload_bytes(data).await?;
+
+        storage.fake_failed_download(&hash);
+        let result = storage.download_bytes(&hash).await;
+        assert!(matches!(result, Err(StorageError::BlobNotFound(_))));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_iter_chunks() -> Result<()> {
+        let storage = FakeStorage::new();
+        let data = (0..3000).map(|i| (i % 256) as u8).collect::<Vec<u8>>(); // 3 chunks with predictable content
+        let hash = storage.upload_bytes(data.clone()).await?;
+
+        let mut stream = storage.iter_chunks(&hash).await?;
+        let mut chunk_count = 0;
+        let mut total_bytes = 0;
+
+        while let Some(chunk_result) = stream.next().await {
+            let chunk = chunk_result?;
+            chunk_count += 1;
+
+            // Check the content of each chunk
+            let start = total_bytes;
+            let end = total_bytes + chunk.len();
+            assert_eq!(
+                &data[start..end],
+                &chunk[..],
+                "Chunk {} content mismatch",
+                chunk_count
+            );
+
+            total_bytes += chunk.len();
+        }
+
+        assert_eq!(chunk_count, 3, "Expected 3 chunks");
+        assert_eq!(total_bytes, data.len(), "Total bytes mismatch");
+
+        let last_chunk_size = data.len() % 1024;
+        assert_eq!(
+            total_bytes % 1024,
+            last_chunk_size,
+            "Last chunk size mismatch"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_iter_chunks_non_existent_blob() {
+        let storage = FakeStorage::new();
+        let result = storage.iter_chunks("non_existent_hash").await;
+        assert!(matches!(result, Err(StorageError::BlobNotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn test_fake_failed_chunks() -> Result<()> {
+        let storage = FakeStorage::new();
+        let data = vec![0u8; 3000]; // 3 chunks
+        let hash = storage.upload_bytes(data).await?;
+
+        let fail_chunk_index = 1; // We'll make the second chunk (index 1) fail
+        storage.fake_failed_chunks(&hash, vec![fail_chunk_index]);
+
+        let mut stream = storage.iter_chunks(&hash).await?;
+        let mut chunk_results = Vec::new();
+
+        while let Some(chunk_result) = stream.next().await {
+            chunk_results.push(chunk_result);
+        }
+
+        assert_eq!(chunk_results.len(), 3, "Expected 3 chunk results");
+
+        for (index, result) in chunk_results.iter().enumerate() {
+            if index == fail_chunk_index {
+                assert!(result.is_err(), "Expected chunk {} to fail", index);
+                assert!(
+                    matches!(result, Err(e) if e.to_string() == "Simulated chunk failure"),
+                    "Unexpected error for chunk {}: {:?}",
+                    index,
+                    result
+                );
+            } else {
+                assert!(result.is_ok(), "Expected chunk {} to succeed", index);
+            }
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_large_upload() -> Result<()> {
+        let storage = FakeStorage::new();
+        let data = vec![0u8; 10 * 1024 * 1024]; // 10 MB
+        let hash = storage.upload_bytes(data.clone()).await?;
+
+        let downloaded = storage.download_bytes(&hash).await?;
+        assert_eq!(data.len(), downloaded.len());
+        assert_eq!(data, downloaded);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_empty_upload() -> Result<()> {
+        let storage = FakeStorage::new();
+        let data = vec![];
+        let hash = storage.upload_bytes(data.clone()).await?;
+
+        let downloaded = storage.download_bytes(&hash).await?;
+        assert_eq!(data, downloaded);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_uploads() -> Result<()> {
+        let storage = FakeStorage::new();
+        let data1 = b"Data 1".to_vec();
+        let data2 = b"Data 2".to_vec();
+
+        let (hash1, hash2) = tokio::join!(
+            storage.upload_bytes(data1.clone()),
+            storage.upload_bytes(data2.clone())
+        );
+
+        let hash1 = hash1?;
+        let hash2 = hash2?;
+
+        assert_ne!(hash1, hash2);
+
+        let (downloaded1, downloaded2) = tokio::join!(
+            storage.download_bytes(&hash1),
+            storage.download_bytes(&hash2)
+        );
+
+        assert_eq!(data1, downloaded1?);
+        assert_eq!(data2, downloaded2?);
+        Ok(())
+    }
+}
