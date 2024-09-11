@@ -3,7 +3,7 @@
 
 use anyhow::Result;
 use bytes::{BufMut, Bytes, BytesMut};
-use entangler::{self, metadata::Metadata};
+use entangler::{self, metadata::Metadata, Entangler};
 use std::str::FromStr;
 use storage;
 
@@ -36,9 +36,9 @@ fn xor_chunks(chunk1: &[u8], chunk2: &[u8]) -> Bytes {
 
 fn new_entangler_from_node<S: iroh::blobs::store::Store>(
     node: &iroh::node::Node<S>,
-) -> Result<entangler::Entangler<storage::iroh::IrohStorage>, entangler::Error> {
+) -> Result<Entangler<storage::iroh::IrohStorage>, entangler::Error> {
     let st = storage::iroh::IrohStorage::from_client(node.client().clone());
-    entangler::Entangler::new(st, 3, HEIGHT as u8, HEIGHT as u8)
+    Entangler::new(st, 3, HEIGHT as u8, HEIGHT as u8)
 }
 
 async fn load_parity_data_to_node<S>(
@@ -71,8 +71,7 @@ async fn load_parity_data_to_node<S>(
 #[tokio::test]
 async fn test_upload_bytes_to_iroh() -> Result<()> {
     let node = iroh::node::Node::memory().spawn().await?;
-    let st = storage::iroh::IrohStorage::from_client(node.client().clone());
-    let ent = entangler::Entangler::new(st, 3, HEIGHT as u8, HEIGHT as u8)?;
+    let ent = new_entangler_from_node(&node)?;
 
     let bytes = create_bytes(NUM_CHUNKS);
     let hashes = ent.upload(bytes.clone()).await?;
@@ -125,8 +124,7 @@ async fn test_upload_bytes_to_iroh() -> Result<()> {
 #[tokio::test]
 async fn test_download_bytes_from_iroh() -> Result<()> {
     let node = iroh::node::Node::memory().spawn().await?;
-    let st = storage::iroh::IrohStorage::from_client(node.client().clone());
-    let ent = entangler::Entangler::new(st, 3, HEIGHT as u8, HEIGHT as u8)?;
+    let ent = new_entangler_from_node(&node)?;
 
     let bytes = create_bytes(NUM_CHUNKS);
     let hashes = ent.upload(bytes.clone()).await?;
@@ -168,6 +166,25 @@ async fn if_blob_is_missing_and_metadata_is_provided_error() -> Result<()> {
     let ent_with_metadata = new_entangler_from_node(&node_with_metadata)?;
 
     let result = ent_with_metadata.download(&hashes.0, Some(&hashes.1)).await;
-    assert!(result.is_err(), "expected download to succeed");
+    assert!(result.is_err(), "expected download to fail");
+    Ok(())
+}
+
+#[tokio::test]
+async fn if_chunk_is_missing_and_metadata_is_provided_should_repair() -> Result<()> {
+    let mock_storage = storage::mock::FakeStorage::new();
+    let ent = Entangler::new(mock_storage.clone(), 3, HEIGHT as u8, HEIGHT as u8)?;
+
+    let bytes = create_bytes(NUM_CHUNKS);
+    let hashes = ent.upload(bytes.clone()).await?;
+
+    mock_storage.fake_failed_download(&hashes.0);
+    mock_storage.fake_failed_chunks(&hashes.0, vec![2]);
+
+    let result = ent.download(&hashes.0, Some(&hashes.1)).await;
+    assert!(!result.is_err(), "expected download to succeed");
+    let downloaded_bytes = result?;
+    assert_eq!(downloaded_bytes, bytes, "downloaded data mismatch");
+
     Ok(())
 }

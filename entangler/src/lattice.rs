@@ -1,9 +1,10 @@
 // Copyright 2024 Entanglement Contributors
 // SPDX-License-Identifier: Apache-2.0, MIT
 
-use crate::grid::Grid;
+use crate::grid::{Dir, Grid, Pos};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
+use std;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum StrandType {
@@ -22,19 +23,65 @@ impl StrandType {
     }
 }
 
+impl Into<Dir> for StrandType {
+    fn into(self) -> Dir {
+        match self {
+            StrandType::Left => Dir::UR,
+            StrandType::Horizontal => Dir::R,
+            StrandType::Right => Dir::DR,
+        }
+    }
+}
+
+impl std::ops::Add<StrandType> for Pos {
+    type Output = Pos;
+
+    fn add(self, rhs: StrandType) -> Self::Output {
+        Pos {
+            x: self.x + 1,
+            y: self.y + rhs.to_i64(),
+        }
+    }
+}
+
+impl std::ops::Sub<StrandType> for Pos {
+    type Output = Pos;
+
+    fn sub(self, rhs: StrandType) -> Self::Output {
+        Pos {
+            x: self.x - 1,
+            y: self.y - rhs.to_i64(),
+        }
+    }
+}
+
+impl std::ops::AddAssign<StrandType> for Pos {
+    fn add_assign(&mut self, rhs: StrandType) {
+        self.x += 1;
+        self.y += rhs.to_i64();
+    }
+}
+
+impl std::ops::SubAssign<StrandType> for Pos {
+    fn sub_assign(&mut self, rhs: StrandType) {
+        self.x -= 1;
+        self.y -= rhs.to_i64();
+    }
+}
+
 pub struct ParityGrid {
     pub grid: Grid,
     pub strand_type: StrandType,
 }
 
 impl ParityGrid {
-    pub fn get_pair_at(&self, x: u64, y: u64) -> Option<(&Bytes, &Bytes)> {
-        match self.grid.try_get_cell(x as i64, y as i64) {
+    pub fn get_pair_at(&self, pos: Pos) -> Option<(&Bytes, &Bytes)> {
+        match self.grid.try_get_cell(pos) {
             Some(cell) => {
                 for i in 1..self.grid.get_height() as i64 + 1 {
-                    let prev_x = x as i64 - i;
-                    let prev_y = y as i64 - self.strand_type.to_i64() * i;
-                    if let Some(prev_cell) = self.grid.try_get_cell(prev_x, prev_y) {
+                    let prev_x = pos.x as i64 - i;
+                    let prev_y = pos.y as i64 - self.strand_type.to_i64() * i;
+                    if let Some(prev_cell) = self.grid.try_get_cell(Pos::new(prev_x, prev_y)) {
                         return Some((prev_cell, cell));
                     }
                 }
@@ -44,10 +91,8 @@ impl ParityGrid {
         }
     }
 
-    pub fn get_pair_for(&self, index: u64) -> Option<(&Bytes, &Bytes)> {
-        let x = index / self.grid.get_height() as u64;
-        let y = index % self.grid.get_height() as u64;
-        self.get_pair_at(x, y)
+    pub fn get_pair_for(&self, index: usize) -> Option<(&Bytes, &Bytes)> {
+        self.get_pair_at(self.grid.index_to_pos(index))
     }
 }
 
@@ -91,7 +136,7 @@ mod tests {
             match t.expected {
                 Some((prev, next)) => {
                     assert_eq!(
-                        parity_grid.get_pair_at(t.coord.0, t.coord.1),
+                        parity_grid.get_pair_at(t.coord.into()),
                         Some((&Bytes::from(prev), &Bytes::from(next))),
                         "expected pair match at ({}, {})",
                         t.coord.0,
@@ -99,7 +144,7 @@ mod tests {
                     );
                 }
                 None => {
-                    assert_eq!(parity_grid.get_pair_at(t.coord.0, t.coord.1), None);
+                    assert_eq!(parity_grid.get_pair_at(t.coord.into()), None);
                 }
             }
 
@@ -107,14 +152,14 @@ mod tests {
             match t.expected {
                 Some((prev, next)) => {
                     assert_eq!(
-                        parity_grid.get_pair_for(index),
+                        parity_grid.get_pair_for(index as usize),
                         Some((&Bytes::from(prev), &Bytes::from(next))),
                         "expected pair match for {}",
                         index
                     );
                 }
                 None => {
-                    assert_eq!(parity_grid.get_pair_at(t.coord.0, t.coord.1), None);
+                    assert_eq!(parity_grid.get_pair_at(t.coord.into()), None);
                 }
             }
         }

@@ -24,3 +24,8 @@ tokio = { workspace = true }
 
 storage = { path = "../storage" }
 chunker = { path = "../chunker" }
+
+[[test]]
+name = "entangler_integration_tests"
+path = "tests/entangler_test.rs"
+required-features = ["storage/mock"]

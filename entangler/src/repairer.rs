@@ -1,7 +1,7 @@
 // Copyright 2024 Entanglement Contributors
 // SPDX-License-Identifier: Apache-2.0, MIT
 
-use crate::grid::Grid;
+use crate::grid::{Dir, Grid};
 use crate::lattice::{ParityGrid, StrandType};
 use anyhow::Result;
 use storage::{Error as StorageError, Storage};
@@ -9,9 +9,10 @@ use storage::{Error as StorageError, Storage};
 use crate::metadata::Metadata;
 use bytes::Bytes;
 
-pub struct Repairer<T: Storage> {
+pub struct Repairer<'a, 'b, T: Storage> {
     metadata: Metadata,
-    storage: T,
+    storage: &'a T,
+    grid: &'b mut Grid,
 }
 
 fn xor_chunks(chunk1: &Bytes, chunk2: &Bytes) -> Bytes {
@@ -22,12 +23,16 @@ fn xor_chunks(chunk1: &Bytes, chunk2: &Bytes) -> Bytes {
     Bytes::from(chunk)
 }
 
-impl<T: Storage> Repairer<T> {
-    pub fn new(storage: T, metadata: Metadata) -> Self {
-        return Self { metadata, storage };
+impl<'a, 'b, T: Storage> Repairer<'a, 'b, T> {
+    pub fn new(storage: &'a T, grid: &'b mut Grid, metadata: Metadata) -> Self {
+        return Self {
+            metadata,
+            storage,
+            grid,
+        };
     }
 
-    pub async fn repair_chunks(&self, indexes: Vec<usize>) -> Result<Vec<Bytes>, StorageError> {
+    pub async fn repair_chunks(&mut self, indexes: Vec<usize>) -> Result<(), StorageError> {
         self.metadata.num_bytes;
 
         let (_, h_parity_hash) = self
@@ -36,8 +41,6 @@ impl<T: Storage> Repairer<T> {
             .iter()
             .find(|(strand, _)| **strand == StrandType::Horizontal)
             .unwrap();
-
-        let mut result = Vec::with_capacity(indexes.len());
 
         match self.storage.download_bytes(&h_parity_hash).await {
             Ok(h_parity_bytes) => {
@@ -52,9 +55,13 @@ impl<T: Storage> Repairer<T> {
                 };
 
                 for index in indexes {
-                    let (left, right) = h_parity_grid.get_pair_for(index as u64).unwrap();
-                    let repaired_bytes = xor_chunks(&left, &right);
-                    result.push(repaired_bytes);
+                    let pos = self.grid.index_to_pos(index);
+                    let neig_pos = pos.adjacent(Dir::L);
+                    if let Some(neig_cell) = self.grid.try_get_cell(neig_pos) {
+                        let parity_cell = h_parity_grid.grid.get_cell(neig_pos);
+                        self.grid
+                            .set_cell(pos, xor_chunks(&neig_cell, &parity_cell));
+                    }
                 }
             }
             Err(e) => {
@@ -65,6 +72,6 @@ impl<T: Storage> Repairer<T> {
             }
         }
 
-        Ok(result)
+        Ok(())
     }
 }

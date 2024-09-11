@@ -63,6 +63,76 @@ fn calculate_lw_aligned_width(num_items: usize, height: usize) -> usize {
     ((num_items + lw - 1) / lw) * height
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum Dir {
+    UL,
+    U,
+    UR,
+    L,
+    R,
+    DL,
+    D,
+    DR,
+}
+
+impl Dir {
+    pub fn to_i64(&self) -> (i64, i64) {
+        match self {
+            Dir::UL => (-1, -1),
+            Dir::U => (0, -1),
+            Dir::UR => (1, -1),
+            Dir::L => (-1, 0),
+            Dir::R => (1, 0),
+            Dir::DL => (-1, 1),
+            Dir::D => (0, 1),
+            Dir::DR => (1, 1),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Pos {
+    pub x: i64,
+    pub y: i64,
+}
+
+impl<T, U> From<(T, U)> for Pos
+where
+    T: TryInto<i64>,
+    U: TryInto<i64>,
+{
+    fn from(coords: (T, U)) -> Self {
+        Self {
+            x: coords.0.try_into().unwrap_or(i64::MAX),
+            y: coords.1.try_into().unwrap_or(i64::MAX),
+        }
+    }
+}
+
+impl Pos {
+    pub fn adjacent(&self, dir: Dir) -> Pos {
+        let (dx, dy) = dir.to_i64();
+        Pos {
+            x: self.x + dx,
+            y: self.y + dy,
+        }
+    }
+
+    pub fn near(&self, dir: Dir, distance: usize) -> Pos {
+        let (dx, dy) = dir.to_i64();
+        Pos {
+            x: self.x + dx * distance as i64,
+            y: self.y + dy * distance as i64,
+        }
+    }
+}
+
+impl Pos {
+    pub fn new<T: TryInto<i64>, U: TryInto<i64>>(x: T, y: U) -> Self {
+        (x, y).into()
+    }
+}
+
 impl Grid {
     pub fn new(data: Vec<Bytes>, height: usize) -> Result<Self, Error> {
         let num_items = data.len();
@@ -84,13 +154,48 @@ impl Grid {
         Self::new(chunks, height)
     }
 
-    pub fn get_cell(&self, x: i64, y: i64) -> &Bytes {
-        &self.data[self.mod_x(x)][self.mod_y(y)]
+    pub fn new_empty(num_items: usize, height: usize) -> Result<Self, Error> {
+        if height == 0 {
+            return Err(Error::InvalidHeight(height));
+        }
+        if num_items < height {
+            return Err(Error::InvalidNumItems(num_items, height));
+        }
+
+        let num_cols = (num_items + height - 1) / height;
+        let mut grid: Vec<Vec<Bytes>> = Vec::with_capacity(num_cols);
+        for _ in 0..num_cols {
+            grid.push(vec![Bytes::new(); height]);
+        }
+
+        Ok(Self {
+            data: grid,
+            num_items,
+            lw_aligned_width: calculate_lw_aligned_width(num_items, height),
+        })
     }
 
-    pub fn try_get_cell(&self, x: i64, y: i64) -> Option<&Bytes> {
-        if self.has_cell(x, y) {
-            Some(self.get_cell(x, y))
+    pub fn index_to_pos(&self, index: usize) -> Pos {
+        Pos {
+            x: (index / self.get_height()) as i64,
+            y: (index % self.get_height()) as i64,
+        }
+    }
+
+    /// Sets the value of a cell at the given coordinates.
+    pub fn set_cell(&mut self, pos: Pos, value: Bytes) {
+        let mod_x = self.mod_x(pos.x);
+        let mod_y = self.mod_y(pos.y);
+        self.data[mod_x][mod_y] = value;
+    }
+
+    pub fn get_cell(&self, pos: Pos) -> &Bytes {
+        &self.data[self.mod_x(pos.x)][self.mod_y(pos.y)]
+    }
+
+    pub fn try_get_cell(&self, pos: Pos) -> Option<&Bytes> {
+        if self.has_cell(pos) {
+            Some(self.get_cell(pos))
         } else {
             None
         }
@@ -114,9 +219,9 @@ impl Grid {
         self.data.get(0).map_or(0, |col| col.len())
     }
 
-    pub fn has_cell(&self, x: i64, y: i64) -> bool {
-        let x = self.mod_x(x);
-        let y = self.mod_y(y);
+    pub fn has_cell(&self, pos: Pos) -> bool {
+        let x = self.mod_x(pos.x);
+        let y = self.mod_y(pos.y);
         x * self.get_height() + y < self.num_items
     }
 
@@ -133,52 +238,6 @@ impl Grid {
 
     pub fn get_num_items(&self) -> usize {
         self.num_items
-    }
-}
-
-/// GridBuilder is a helper struct to build a Grid.
-/// It allows setting individual cells in the grid and then building the final Grid.
-#[derive(Debug)]
-pub struct GridBuilder {
-    data: Vec<Vec<Bytes>>,
-    num_items: usize,
-}
-
-impl GridBuilder {
-    /// Creates a new GridBuilder with the given number of items and height.
-    pub fn new(num_items: usize, height: usize) -> Result<Self, Error> {
-        if height == 0 {
-            return Err(Error::InvalidHeight(height));
-        }
-        if num_items < height {
-            return Err(Error::InvalidNumItems(num_items, height));
-        }
-
-        let num_cols = (num_items + height - 1) / height;
-        let mut grid: Vec<Vec<Bytes>> = Vec::with_capacity(num_cols);
-        for _ in 0..num_cols {
-            grid.push(vec![Bytes::new(); height]);
-        }
-
-        Ok(Self {
-            data: grid,
-            num_items,
-        })
-    }
-
-    /// Sets the value of a cell at the given coordinates.
-    pub fn set_cell(&mut self, x: usize, y: usize, value: Bytes) {
-        self.data[x][y] = value;
-    }
-
-    /// Builds the final Grid.
-    pub fn build(self) -> Grid {
-        let h = self.data[0].len();
-        Grid {
-            data: self.data,
-            num_items: self.num_items,
-            lw_aligned_width: calculate_lw_aligned_width(self.num_items, h),
-        }
     }
 }
 
@@ -211,22 +270,22 @@ mod tests {
         assert_eq!(grid.get_height(), 2, "Grid height should be 2");
         assert_eq!(grid.get_num_items(), 4, "Grid should have 4 items");
         assert_eq!(
-            grid.get_cell(0, 0),
+            grid.get_cell((0, 0).into()),
             &data[0],
             "Cell (0, 0) should contain 'a'"
         );
         assert_eq!(
-            grid.get_cell(0, 1),
+            grid.get_cell((0, 1).into()),
             &data[1],
             "Cell (0, 1) should contain 'b'"
         );
         assert_eq!(
-            grid.get_cell(1, 0),
+            grid.get_cell((1, 0).into()),
             &data[2],
             "Cell (1, 0) should contain 'c'"
         );
         assert_eq!(
-            grid.get_cell(1, 1),
+            grid.get_cell((1, 1).into()),
             &data[3],
             "Cell (1, 1) should contain 'd'"
         );
@@ -239,11 +298,11 @@ mod tests {
         assert_eq!(grid.get_width(), 2, "Grid width should be 2");
         assert_eq!(grid.get_height(), 3, "Grid height should be 3");
         assert_eq!(grid.get_num_items(), 5, "Grid should have 7 items");
-        assert_eq!(grid.get_cell(0, 0), &Bytes::from("ab"));
-        assert_eq!(grid.get_cell(0, 1), &Bytes::from("cd"));
-        assert_eq!(grid.get_cell(0, 2), &Bytes::from("ef"));
-        assert_eq!(grid.get_cell(1, 0), &Bytes::from("gh"));
-        assert_eq!(grid.get_cell(1, 1), &Bytes::from("i"));
+        assert_eq!(grid.get_cell((0, 0).into()), &Bytes::from("ab"));
+        assert_eq!(grid.get_cell((0, 1).into()), &Bytes::from("cd"));
+        assert_eq!(grid.get_cell((0, 2).into()), &Bytes::from("ef"));
+        assert_eq!(grid.get_cell((1, 0).into()), &Bytes::from("gh"));
+        assert_eq!(grid.get_cell((1, 1).into()), &Bytes::from("i"));
     }
 
     #[test]
@@ -276,73 +335,73 @@ mod tests {
     fn test_grid_get_cell() {
         let grid = Grid::new(create_ag_chunks(), 3).unwrap();
 
-        assert_eq!(grid.get_cell(0, 0), &Bytes::from("a"));
-        assert_eq!(grid.get_cell(0, 1), &Bytes::from("b"));
-        assert_eq!(grid.get_cell(0, 2), &Bytes::from("c"));
-        assert_eq!(grid.get_cell(1, 0), &Bytes::from("d"));
-        assert_eq!(grid.get_cell(1, 1), &Bytes::from("e"));
-        assert_eq!(grid.get_cell(1, 2), &Bytes::from("f"));
-        assert_eq!(grid.get_cell(2, 0), &Bytes::from("g"));
+        assert_eq!(grid.get_cell(Pos::new(0, 0)), &Bytes::from("a"));
+        assert_eq!(grid.get_cell(Pos::new(0, 1)), &Bytes::from("b"));
+        assert_eq!(grid.get_cell(Pos::new(0, 2)), &Bytes::from("c"));
+        assert_eq!(grid.get_cell(Pos::new(1, 0)), &Bytes::from("d"));
+        assert_eq!(grid.get_cell(Pos::new(1, 1)), &Bytes::from("e"));
+        assert_eq!(grid.get_cell(Pos::new(1, 2)), &Bytes::from("f"));
+        assert_eq!(grid.get_cell(Pos::new(2, 0)), &Bytes::from("g"));
 
         // Test wrapping
-        assert_eq!(grid.get_cell(3, 0), &Bytes::from("a"));
-        assert_eq!(grid.get_cell(-1, 0), &Bytes::from("g"));
-        assert_eq!(grid.get_cell(0, -1), &Bytes::from("c"));
+        assert_eq!(grid.get_cell(Pos::new(3, 0)), &Bytes::from("a"));
+        assert_eq!(grid.get_cell(Pos::new(-1, 0)), &Bytes::from("g"));
+        assert_eq!(grid.get_cell(Pos::new(0, -1)), &Bytes::from("c"));
     }
 
     #[test]
     fn test_grid_get_cell_incomplete_lw() {
         let grid = Grid::new(create_ag_chunks(), 4).unwrap();
 
-        assert!(grid.has_cell(0, 0));
-        assert!(grid.has_cell(0, 1));
-        assert!(grid.has_cell(0, 2));
-        assert!(grid.has_cell(0, 3));
-        assert!(grid.has_cell(1, 0));
-        assert!(grid.has_cell(1, 1));
-        assert!(grid.has_cell(1, 2));
+        assert!(grid.has_cell(Pos::new(0, 0)));
+        assert!(grid.has_cell(Pos::new(0, 1)));
+        assert!(grid.has_cell(Pos::new(0, 2)));
+        assert!(grid.has_cell(Pos::new(0, 3)));
+        assert!(grid.has_cell(Pos::new(1, 0)));
+        assert!(grid.has_cell(Pos::new(1, 1)));
+        assert!(grid.has_cell(Pos::new(1, 2)));
 
-        assert_eq!(grid.get_cell(0, 0), &Bytes::from("a"));
-        assert_eq!(grid.get_cell(0, 1), &Bytes::from("b"));
-        assert_eq!(grid.get_cell(0, 2), &Bytes::from("c"));
-        assert_eq!(grid.get_cell(0, 3), &Bytes::from("d"));
-        assert_eq!(grid.get_cell(1, 0), &Bytes::from("e"));
-        assert_eq!(grid.get_cell(1, 1), &Bytes::from("f"));
-        assert_eq!(grid.get_cell(1, 2), &Bytes::from("g"));
+        assert_eq!(grid.get_cell(Pos::new(0, 0)), &Bytes::from("a"));
+        assert_eq!(grid.get_cell(Pos::new(0, 1)), &Bytes::from("b"));
+        assert_eq!(grid.get_cell(Pos::new(0, 2)), &Bytes::from("c"));
+        assert_eq!(grid.get_cell(Pos::new(0, 3)), &Bytes::from("d"));
+        assert_eq!(grid.get_cell(Pos::new(1, 0)), &Bytes::from("e"));
+        assert_eq!(grid.get_cell(Pos::new(1, 1)), &Bytes::from("f"));
+        assert_eq!(grid.get_cell(Pos::new(1, 2)), &Bytes::from("g"));
 
-        assert!(!grid.has_cell(1, 3));
-        assert!(!grid.has_cell(2, 0));
-        assert!(!grid.has_cell(2, 1));
-        assert!(!grid.has_cell(2, 2));
-        assert!(!grid.has_cell(2, 3));
-        assert!(!grid.has_cell(3, 0));
-        assert!(!grid.has_cell(3, 1));
-        assert!(!grid.has_cell(3, 2));
-        assert!(!grid.has_cell(3, 3));
+        assert!(!grid.has_cell(Pos::new(1, 3)));
+        assert!(!grid.has_cell(Pos::new(2, 0)));
+        assert!(!grid.has_cell(Pos::new(2, 1)));
+        assert!(!grid.has_cell(Pos::new(2, 2)));
+        assert!(!grid.has_cell(Pos::new(2, 3)));
+        assert!(!grid.has_cell(Pos::new(3, 0)));
+        assert!(!grid.has_cell(Pos::new(3, 1)));
+        assert!(!grid.has_cell(Pos::new(3, 2)));
+        assert!(!grid.has_cell(Pos::new(3, 3)));
 
         // Test wrapping
-        assert!(grid.has_cell(4, 0));
-        assert!(grid.has_cell(5, 0));
-        assert!(grid.has_cell(-3, 2));
-        assert!(grid.has_cell(0, -1));
+        assert!(grid.has_cell(Pos::new(4, 0)));
+        assert!(grid.has_cell(Pos::new(5, 0)));
+        assert!(grid.has_cell(Pos::new(-3, 2)));
+        assert!(grid.has_cell(Pos::new(0, -1)));
 
-        assert_eq!(grid.get_cell(4, 0), &Bytes::from("a"));
-        assert_eq!(grid.get_cell(5, 0), &Bytes::from("e"));
-        assert_eq!(grid.get_cell(-3, 2), &Bytes::from("g"));
-        assert_eq!(grid.get_cell(0, -1), &Bytes::from("d"));
+        assert_eq!(grid.get_cell(Pos::new(4, 0)), &Bytes::from("a"));
+        assert_eq!(grid.get_cell(Pos::new(5, 0)), &Bytes::from("e"));
+        assert_eq!(grid.get_cell(Pos::new(-3, 2)), &Bytes::from("g"));
+        assert_eq!(grid.get_cell(Pos::new(0, -1)), &Bytes::from("d"));
 
-        assert!(!grid.has_cell(6, 0));
-        assert!(!grid.has_cell(6, 1));
-        assert!(!grid.has_cell(6, 2));
-        assert!(!grid.has_cell(5, 3));
-        assert!(!grid.has_cell(-1, 0));
-        assert!(!grid.has_cell(-2, 0));
-        assert!(!grid.has_cell(-1, 1));
-        assert!(!grid.has_cell(-2, 1));
-        assert!(!grid.has_cell(-1, 2));
-        assert!(!grid.has_cell(-2, 2));
-        assert!(!grid.has_cell(-3, 3));
-        assert!(!grid.has_cell(1, -1));
+        assert!(!grid.has_cell(Pos::new(6, 0)));
+        assert!(!grid.has_cell(Pos::new(6, 1)));
+        assert!(!grid.has_cell(Pos::new(6, 2)));
+        assert!(!grid.has_cell(Pos::new(5, 3)));
+        assert!(!grid.has_cell(Pos::new(-1, 0)));
+        assert!(!grid.has_cell(Pos::new(-2, 0)));
+        assert!(!grid.has_cell(Pos::new(-1, 1)));
+        assert!(!grid.has_cell(Pos::new(-2, 1)));
+        assert!(!grid.has_cell(Pos::new(-1, 2)));
+        assert!(!grid.has_cell(Pos::new(-2, 2)));
+        assert!(!grid.has_cell(Pos::new(-3, 3)));
+        assert!(!grid.has_cell(Pos::new(1, -1)));
     }
 
     #[test]
@@ -360,30 +419,30 @@ mod tests {
     fn test_grid_try_get_cell() {
         let grid = Grid::new(create_ag_chunks(), 3).unwrap();
 
-        assert_eq!(grid.try_get_cell(0, 0), Some(&Bytes::from("a")));
-        assert_eq!(grid.try_get_cell(0, 1), Some(&Bytes::from("b")));
-        assert_eq!(grid.try_get_cell(0, 2), Some(&Bytes::from("c")));
-        assert_eq!(grid.try_get_cell(1, 0), Some(&Bytes::from("d")));
-        assert_eq!(grid.try_get_cell(1, 1), Some(&Bytes::from("e")));
-        assert_eq!(grid.try_get_cell(1, 2), Some(&Bytes::from("f")));
-        assert_eq!(grid.try_get_cell(2, 0), Some(&Bytes::from("g")));
-        assert_eq!(grid.try_get_cell(2, 1), None);
-        assert_eq!(grid.try_get_cell(2, 2), None);
+        assert_eq!(grid.try_get_cell(Pos::new(0, 0)), Some(&Bytes::from("a")));
+        assert_eq!(grid.try_get_cell(Pos::new(0, 1)), Some(&Bytes::from("b")));
+        assert_eq!(grid.try_get_cell(Pos::new(0, 2)), Some(&Bytes::from("c")));
+        assert_eq!(grid.try_get_cell(Pos::new(1, 0)), Some(&Bytes::from("d")));
+        assert_eq!(grid.try_get_cell(Pos::new(1, 1)), Some(&Bytes::from("e")));
+        assert_eq!(grid.try_get_cell(Pos::new(1, 2)), Some(&Bytes::from("f")));
+        assert_eq!(grid.try_get_cell(Pos::new(2, 0)), Some(&Bytes::from("g")));
+        assert_eq!(grid.try_get_cell(Pos::new(2, 1)), None);
+        assert_eq!(grid.try_get_cell(Pos::new(2, 2)), None);
     }
 
     #[test]
     fn test_grid_has_cell() {
         let grid = Grid::new(create_ag_chunks(), 3).unwrap();
 
-        assert!(grid.has_cell(0, 0));
-        assert!(grid.has_cell(0, 1));
-        assert!(grid.has_cell(0, 2));
-        assert!(grid.has_cell(1, 0));
-        assert!(grid.has_cell(1, 1));
-        assert!(grid.has_cell(1, 2));
-        assert!(grid.has_cell(2, 0));
-        assert!(!grid.has_cell(2, 1));
-        assert!(!grid.has_cell(2, 2));
+        assert!(grid.has_cell(Pos::new(0, 0)));
+        assert!(grid.has_cell(Pos::new(0, 1)));
+        assert!(grid.has_cell(Pos::new(0, 2)));
+        assert!(grid.has_cell(Pos::new(1, 0)));
+        assert!(grid.has_cell(Pos::new(1, 1)));
+        assert!(grid.has_cell(Pos::new(1, 2)));
+        assert!(grid.has_cell(Pos::new(2, 0)));
+        assert!(!grid.has_cell(Pos::new(2, 1)));
+        assert!(!grid.has_cell(Pos::new(2, 2)));
     }
 
     #[test]
@@ -420,43 +479,41 @@ mod tests {
     }
 
     #[test]
-    fn test_grid_builder() {
-        let mut builder = GridBuilder::new(7, 3).unwrap();
-        builder.set_cell(0, 0, Bytes::from("a"));
-        builder.set_cell(0, 1, Bytes::from("b"));
-        builder.set_cell(0, 2, Bytes::from("c"));
-        builder.set_cell(1, 0, Bytes::from("d"));
-        builder.set_cell(1, 1, Bytes::from("e"));
-        builder.set_cell(1, 2, Bytes::from("f"));
-        builder.set_cell(2, 0, Bytes::from("g"));
-
-        let grid = builder.build();
+    fn test_grid_new_empty() {
+        let mut grid = Grid::new_empty(7, 3).unwrap();
+        grid.set_cell(Pos::new(0, 0), Bytes::from("a"));
+        grid.set_cell(Pos::new(0, 1), Bytes::from("b"));
+        grid.set_cell(Pos::new(0, 2), Bytes::from("c"));
+        grid.set_cell(Pos::new(1, 0), Bytes::from("d"));
+        grid.set_cell(Pos::new(1, 1), Bytes::from("e"));
+        grid.set_cell(Pos::new(1, 2), Bytes::from("f"));
+        grid.set_cell(Pos::new(2, 0), Bytes::from("g"));
 
         assert_eq!(grid.get_width(), 3, "Grid width should be 3");
         assert_eq!(grid.get_height(), 3, "Grid height should be 3");
         assert_eq!(grid.get_num_items(), 7, "Grid should have 7 items");
-        assert_eq!(grid.get_cell(0, 0), &Bytes::from("a"));
-        assert_eq!(grid.get_cell(0, 1), &Bytes::from("b"));
-        assert_eq!(grid.get_cell(0, 2), &Bytes::from("c"));
-        assert_eq!(grid.get_cell(1, 0), &Bytes::from("d"));
-        assert_eq!(grid.get_cell(1, 1), &Bytes::from("e"));
-        assert_eq!(grid.get_cell(1, 2), &Bytes::from("f"));
-        assert_eq!(grid.get_cell(2, 0), &Bytes::from("g"));
+        assert_eq!(grid.get_cell(Pos::new(0, 0)), &Bytes::from("a"));
+        assert_eq!(grid.get_cell(Pos::new(0, 1)), &Bytes::from("b"));
+        assert_eq!(grid.get_cell(Pos::new(0, 2)), &Bytes::from("c"));
+        assert_eq!(grid.get_cell(Pos::new(1, 0)), &Bytes::from("d"));
+        assert_eq!(grid.get_cell(Pos::new(1, 1)), &Bytes::from("e"));
+        assert_eq!(grid.get_cell(Pos::new(1, 2)), &Bytes::from("f"));
+        assert_eq!(grid.get_cell(Pos::new(2, 0)), &Bytes::from("g"));
     }
 
     #[test]
-    fn test_grid_builder_invalid_width() {
-        let result = GridBuilder::new(5, 0);
+    fn test_grid_new_empty_invalid_width() {
+        let result = Grid::new_empty(5, 0);
         assert!(result.is_err(), "Expected an error for invalid width");
         assert!(matches!(result.unwrap_err(), Error::InvalidHeight(0)));
     }
 
     #[test]
-    fn test_grid_builder_invalid_num_items() {
+    fn test_grid_new_empty_invalid_num_items() {
         let test_cases = vec![(0, 3), (1, 3), (2, 3)];
 
         for (num_items, num_columns) in test_cases {
-            let result = GridBuilder::new(num_items, num_columns);
+            let result = Grid::new_empty(num_items, num_columns);
             assert!(
                 result.is_err(),
                 "Expected an error for invalid number of items: {} items, {} columns",

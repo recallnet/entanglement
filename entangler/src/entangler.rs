@@ -64,6 +64,9 @@ pub enum Error {
 
     #[error("Failed to parse metadata: {0}")]
     ParsingMetadata(#[from] serde_json::Error),
+
+    #[error("Error occurred: {0}")]
+    Other(#[from] anyhow::Error),
 }
 
 impl<T: Storage> Entangler<T> {
@@ -139,53 +142,49 @@ impl<T: Storage> Entangler<T> {
 
         match self.storage.iter_chunks(hash).await {
             Ok(stream) => {
-                let missing_chunks = self.find_missing_chunks(stream).await?;
-                self.repair_chunks(metadata, missing_chunks).await
+                let num_chunks = (metadata.num_bytes as usize + CHUNK_SIZE - 1) / CHUNK_SIZE;
+                let (available_chunks, missing_indexes) =
+                    self.find_missing_chunks(stream, num_chunks).await?;
+                self.repair_chunks(metadata, available_chunks, missing_indexes)
+                    .await
             }
-            //Err(StorageError::BlobNotFound(_)) => self.repair_blob(metadata).await,
             Err(e) => return Err(Error::StorageError(e.into())),
         }
     }
 
-    /*async fn repair_blob(&self, metadata: Metadata) -> Result<Bytes, Error> {
-        let num_chunks = (metadata.num_bytes as usize + CHUNK_SIZE - 1) / CHUNK_SIZE;
-        let missing_chunks: Vec<usize> = (0..num_chunks).collect();
-        self.repair_chunks(metadata, missing_chunks).await
-    }*/
-
-    async fn find_missing_chunks(&self, mut stream: ByteStream) -> Result<Vec<usize>, Error> {
-        let mut missing_chunks = Vec::new();
+    async fn find_missing_chunks(
+        &self,
+        mut stream: ByteStream,
+        num_chunks: usize,
+    ) -> Result<(Vec<Bytes>, Vec<usize>), Error> {
+        let mut missing_indexes = Vec::new();
+        let mut available_chunks = vec![Bytes::new(); num_chunks];
         let mut index = 0;
-
         while let Some(chunk_result) = stream.next().await {
             match chunk_result {
-                Ok(_) => (),
-                Err(_) => missing_chunks.push(index),
+                Ok(chunk) => available_chunks[index] = chunk,
+                Err(_) => missing_indexes.push(index),
             }
             index += 1;
         }
 
-        Ok(missing_chunks)
+        Ok((available_chunks, missing_indexes))
     }
 
     async fn repair_chunks(
         &self,
         metadata: Metadata,
-        missing_chunks: Vec<usize>,
+        chunks: Vec<Bytes>,
+        missing_indexes: Vec<usize>,
     ) -> std::result::Result<Bytes, Error> {
-        let mut chunks = Vec::new();
-        let num_chunks = (metadata.num_bytes as usize + CHUNK_SIZE - 1) / CHUNK_SIZE;
-        chunks.resize(num_chunks, Bytes::new());
+        let mut grid =
+            Grid::new(chunks, metadata.s as usize).map_err(|e| Error::Other(e.into()))?;
 
-        let repaired_chunks = Repairer::new(self.storage.clone(), metadata)
-            .repair_chunks(missing_chunks.clone())
+        Repairer::new(&self.storage, &mut grid, metadata)
+            .repair_chunks(missing_indexes.clone())
             .await?;
 
-        for (i, chunk) in repaired_chunks.into_iter().enumerate() {
-            chunks[missing_chunks[i]] = chunk;
-        }
-
-        Ok(Bytes::from(chunks.concat()))
+        Ok(grid.assemble_data())
     }
 }
 
