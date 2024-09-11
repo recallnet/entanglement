@@ -4,3 +4,6 @@
 pub mod iroh;
 pub mod storage;
 pub use storage::*;
+
+#[cfg(feature = "mock")]
+pub mod mock;
