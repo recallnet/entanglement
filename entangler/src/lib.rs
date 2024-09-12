@@ -3,10 +3,9 @@
 
 pub mod entangler;
 pub use entangler::*;
-
+pub mod lattice;
 pub mod metadata;
 
 mod executer;
 mod grid;
-mod lattice;
 mod repairer;

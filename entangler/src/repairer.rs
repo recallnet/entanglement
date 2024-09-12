@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0, MIT
 
 use crate::grid::{Dir, Grid};
-use crate::lattice::{ParityGrid, StrandType};
+use crate::lattice::ParityGrid;
 use anyhow::Result;
 use storage::{Error as StorageError, Storage};
 
@@ -32,44 +32,54 @@ impl<'a, 'b, T: Storage> Repairer<'a, 'b, T> {
         };
     }
 
-    pub async fn repair_chunks(&mut self, indexes: Vec<usize>) -> Result<(), StorageError> {
+    pub async fn repair_chunks(&mut self, mut indexes: Vec<usize>) -> Result<(), StorageError> {
         self.metadata.num_bytes;
 
-        let (_, h_parity_hash) = self
-            .metadata
-            .parity_hashes
-            .iter()
-            .find(|(strand, _)| **strand == StrandType::Horizontal)
-            .unwrap();
-
-        match self.storage.download_bytes(&h_parity_hash).await {
-            Ok(h_parity_bytes) => {
-                let h_parity_grid = ParityGrid {
-                    grid: Grid::from_bytes(
-                        h_parity_bytes,
-                        self.metadata.s as usize,
-                        self.metadata.chunk_size as usize,
-                    )
-                    .map_err(|e| StorageError::Other(anyhow::anyhow!(e.to_string())))?,
-                    strand_type: StrandType::Horizontal,
-                };
-
-                for index in indexes {
-                    let pos = self.grid.index_to_pos(index);
-                    let neig_pos = pos.adjacent(Dir::L);
-                    if let Some(neig_cell) = self.grid.try_get_cell(neig_pos) {
-                        let parity_cell = h_parity_grid.grid.get_cell(neig_pos);
-                        self.grid
-                            .set_cell(pos, xor_chunks(&neig_cell, &parity_cell));
-                    }
+        for (strand, parity_hash) in &self.metadata.parity_hashes {
+            let parity_result = self.storage.download_bytes(parity_hash).await;
+            if parity_result.is_err() {
+                match parity_result.err().unwrap() {
+                    StorageError::BlobNotFound(_) => continue,
+                    other => return Err(other),
                 }
             }
-            Err(e) => {
-                return Err(StorageError::Other(anyhow::anyhow!(
-                    "Failed to download horizontal parity: {}",
-                    e
-                )));
+
+            let parity_grid = ParityGrid {
+                grid: Grid::from_bytes(
+                    parity_result.unwrap(),
+                    self.metadata.s as usize,
+                    self.metadata.chunk_size as usize,
+                )
+                .map_err(|e| StorageError::Other(anyhow::anyhow!(e.to_string())))?,
+                strand_type: *strand,
+            };
+
+            let mut i = 0;
+            while i < indexes.len() {
+                let index = indexes[i];
+                let pos = self.grid.index_to_pos(index);
+                let dir: Dir = (*strand).into();
+                let neig_pos = pos.adjacent(dir.opposite());
+                if let Some(neig_cell) = self.grid.try_get_cell(neig_pos) {
+                    let parity_cell = parity_grid.grid.get_cell(neig_pos);
+                    self.grid
+                        .set_cell(pos, xor_chunks(&neig_cell, &parity_cell));
+
+                    indexes.swap_remove(i);
+                } else {
+                    i += 1;
+                }
             }
+
+            if indexes.is_empty() {
+                break;
+            }
+        }
+
+        if !indexes.is_empty() {
+            return Err(StorageError::Other(anyhow::anyhow!(
+                "Failed to repair all chunks"
+            )));
         }
 
         Ok(())

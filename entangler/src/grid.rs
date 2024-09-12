@@ -88,6 +88,19 @@ impl Dir {
             Dir::DR => (1, 1),
         }
     }
+    
+    pub fn opposite(&self) -> Dir {
+        match self {
+            Dir::UL => Dir::DR,
+            Dir::U => Dir::D,
+            Dir::UR => Dir::DL,
+            Dir::L => Dir::R,
+            Dir::R => Dir::L,
+            Dir::DL => Dir::UR,
+            Dir::D => Dir::U,
+            Dir::DR => Dir::UL,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -3,9 +3,9 @@
 
 use anyhow::Result;
 use bytes::{BufMut, Bytes, BytesMut};
-use entangler::{self, metadata::Metadata, Entangler};
+use entangler::{self, lattice::StrandType, metadata::Metadata, Entangler};
 use std::str::FromStr;
-use storage;
+use storage::{self, mock::FakeStorage, Storage};
 
 const HEIGHT: usize = 3;
 // we choose WIDTH to be multiple of HEIGHT to avoid complex strand wrapping calculations
@@ -66,6 +66,11 @@ async fn load_parity_data_to_node<S>(
             .await?;
     }
     Ok(())
+}
+
+async fn load_metadata(hash: &str, storage: &impl Storage) -> Result<Metadata> {
+    let metadata_bytes = storage.download_bytes(hash).await?;
+    Ok(serde_json::from_slice(&metadata_bytes)?)
 }
 
 #[tokio::test]
@@ -172,7 +177,7 @@ async fn if_blob_is_missing_and_metadata_is_provided_error() -> Result<()> {
 
 #[tokio::test]
 async fn if_chunk_is_missing_and_metadata_is_provided_should_repair() -> Result<()> {
-    let mock_storage = storage::mock::FakeStorage::new();
+    let mock_storage = FakeStorage::new();
     let ent = Entangler::new(mock_storage.clone(), 3, HEIGHT as u8, HEIGHT as u8)?;
 
     let bytes = create_bytes(NUM_CHUNKS);
@@ -185,6 +190,98 @@ async fn if_chunk_is_missing_and_metadata_is_provided_should_repair() -> Result<
     assert!(!result.is_err(), "expected download to succeed");
     let downloaded_bytes = result?;
     assert_eq!(downloaded_bytes, bytes, "downloaded data mismatch");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_entangler_repair_scenarios() -> Result<()> {
+    struct TestCase {
+        name: &'static str,
+        setup: fn(&FakeStorage, &Metadata),
+        should_succeed: bool,
+    }
+
+    let test_cases = vec![
+        TestCase {
+            name: "1 chunk is missing and only L strand is available",
+            setup: |st, metadata| {
+                st.fake_failed_chunks(&metadata.orig_hash, vec![2]);
+
+                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Right]);
+                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Horizontal]);
+            },
+            should_succeed: true,
+        },
+        TestCase {
+            name: "1 chunk is missing and only R strand is available",
+            setup: |st, metadata| {
+                st.fake_failed_chunks(&metadata.orig_hash, vec![2]);
+
+                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Left]);
+                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Horizontal]);
+            },
+            should_succeed: true,
+        },
+        TestCase {
+            name: "1 chunk is missing and only H strand is available",
+            setup: |st, metadata| {
+                st.fake_failed_chunks(&metadata.orig_hash, vec![2]);
+
+                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Left]);
+                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Right]);
+            },
+            should_succeed: true,
+        },
+        TestCase {
+            name: "no parity is available, should fail",
+            setup: |st, metadata| {
+                st.fake_failed_chunks(&metadata.orig_hash, vec![2]);
+
+                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Left]);
+                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Right]);
+                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Horizontal]);
+            },
+            should_succeed: false,
+        },
+    ];
+
+    for case in test_cases {
+        println!("Running test case: {}", case.name);
+
+        let mock_storage = FakeStorage::new();
+        let ent = Entangler::new(mock_storage.clone(), 3, HEIGHT as u8, HEIGHT as u8)?;
+
+        let bytes = create_bytes(NUM_CHUNKS);
+        let hashes = ent.upload(bytes.clone()).await?;
+        let metadata = load_metadata(&hashes.1, &mock_storage).await?;
+
+        mock_storage.fake_failed_download(&metadata.orig_hash);
+
+        (case.setup)(&mock_storage, &metadata);
+
+        let result = ent.download(&hashes.0, Some(&hashes.1)).await;
+
+        if case.should_succeed {
+            assert!(
+                !result.is_err(),
+                "expected download to succeed for case: {}",
+                case.name
+            );
+            let downloaded_bytes = result?;
+            assert_eq!(
+                downloaded_bytes, bytes,
+                "downloaded data mismatch for case: {}",
+                case.name
+            );
+        } else {
+            assert!(
+                result.is_err(),
+                "expected download to fail for case: {}",
+                case.name
+            );
+        }
+    }
 
     Ok(())
 }
