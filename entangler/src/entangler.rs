@@ -154,13 +154,13 @@ impl<T: Storage> Entangler<T> {
 
     async fn find_missing_chunks(
         &self,
-        mut stream: ByteStream,
+        mut stream: ByteStream<T::ChunkId>,
         num_chunks: usize,
     ) -> Result<(Vec<Bytes>, Vec<usize>), Error> {
         let mut missing_indexes = Vec::new();
         let mut available_chunks = vec![Bytes::new(); num_chunks];
         let mut index = 0;
-        while let Some(chunk_result) = stream.next().await {
+        while let Some((_, chunk_result)) = stream.next().await {
             match chunk_result {
                 Ok(chunk) => available_chunks[index] = chunk,
                 Err(_) => missing_indexes.push(index),
@@ -192,14 +192,14 @@ impl<T: Storage> Entangler<T> {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use futures::Stream;
-    use std::pin::Pin;
 
     #[derive(Clone)]
     struct MockStorage;
 
     #[async_trait]
     impl Storage for MockStorage {
+        type ChunkId = usize;
+
         async fn upload_bytes(&self, _: impl Into<Bytes> + Send) -> Result<String> {
             Ok("mock_hash".to_string())
         }
@@ -208,12 +208,21 @@ mod tests {
             Ok(Bytes::from("mock data"))
         }
 
-        async fn iter_chunks(
-            &self,
-            _: &str,
-        ) -> Result<Pin<Box<dyn Stream<Item = Result<Bytes>> + Send>>, StorageError> {
+        async fn iter_chunks(&self, _: &str) -> Result<ByteStream<Self::ChunkId>, StorageError> {
             let chunks = vec![Bytes::from("mock data")];
-            Ok(Box::pin(futures::stream::iter(chunks.into_iter().map(Ok))))
+
+            let stream = futures::stream::iter(
+                chunks
+                    .into_iter()
+                    .enumerate()
+                    .map(move |(index, chunk)| (index, Ok(chunk))),
+            );
+
+            Ok(Box::pin(stream))
+        }
+
+        async fn download_chunk(&self, _: &str, _: Self::ChunkId) -> Result<Bytes, StorageError> {
+            Ok(Bytes::from("mock data"))
         }
     }
 

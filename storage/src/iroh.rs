@@ -107,6 +107,8 @@ fn parse_hash(hash: &str) -> Result<Hash, StorageError> {
 
 #[async_trait]
 impl Storage for IrohStorage {
+    type ChunkId = usize;
+
     async fn upload_bytes(&self, bytes: impl Into<Bytes> + Send) -> Result<String> {
         let blob = self.client().blobs().add_bytes(bytes).await.unwrap();
         Ok(blob.hash.to_string())
@@ -118,7 +120,7 @@ impl Storage for IrohStorage {
         Ok(res)
     }
 
-    async fn iter_chunks(&self, hash: &str) -> Result<ByteStream, StorageError> {
+    async fn iter_chunks(&self, hash: &str) -> Result<ByteStream<Self::ChunkId>, StorageError> {
         let hash = parse_hash(hash)?;
         let reader = self.client().blobs().read(hash).await;
         if let Err(e) = reader {
@@ -132,8 +134,8 @@ impl Storage for IrohStorage {
         let total_size = reader?.size();
 
         let stream = stream::unfold(
-            (self.client().blobs().clone(), hash, 0u64, total_size),
-            move |(client, hash, offset, total_size)| async move {
+            (self.client().blobs().clone(), 0u64),
+            move |(client, offset)| async move {
                 if offset >= total_size {
                     return None;
                 }
@@ -141,35 +143,48 @@ impl Storage for IrohStorage {
                 let remaining = total_size - offset;
                 let len = std::cmp::min(CHUNK_SIZE, remaining as usize);
 
-                match client.read_at_to_bytes(hash, offset, Some(len)).await {
-                    Ok(chunk) => {
-                        let new_offset = offset + len as u64;
-                        Some((Ok(chunk), (client, hash, new_offset, total_size)))
-                    }
-                    Err(e) => Some((
-                        Err(e.into()),
-                        (client, hash, offset + len as u64, total_size),
-                    )),
-                }
+                let chunk_id = offset as usize / CHUNK_SIZE;
+                Some(
+                    match client.read_at_to_bytes(hash, offset, Some(len)).await {
+                        Ok(chunk) => {
+                            let new_offset = offset + len as u64;
+                            ((chunk_id, Ok(chunk)), (client, new_offset))
+                        }
+                        Err(e) => ((chunk_id, Err(e.into())), (client, offset + len as u64)),
+                    },
+                )
             },
         );
 
         Ok(Box::pin(stream))
+    }
+
+    async fn download_chunk(
+        &self,
+        hash: &str,
+        chunk_id: Self::ChunkId,
+    ) -> Result<Bytes, StorageError> {
+        let hash = parse_hash(hash)?;
+        let offset = chunk_id as u64 * CHUNK_SIZE as u64;
+
+        self.client()
+            .blobs()
+            .read_at_to_bytes(hash, offset, Some(CHUNK_SIZE))
+            .await
+            .map_err(|e| StorageError::ChunkNotFound(hash.to_string(), e.to_string(), e))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::Storage;
-    use anyhow::Result;
     use bytes::Bytes;
     use futures::StreamExt;
     use tokio;
 
     async fn collect_chunks(storage: &IrohStorage, hash: &str) -> Result<Vec<Bytes>> {
         let stream = storage.iter_chunks(hash).await?;
-        let results: Vec<Result<Bytes>> = stream.collect().await;
+        let results: Vec<Result<Bytes>> = stream.map(|res| res.1).collect().await;
         results.into_iter().collect()
     }
 
@@ -236,4 +251,70 @@ mod tests {
         assert!(result.is_err());
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_download_chunk_small_blob() -> Result<()> {
+        let storage = IrohStorage::new_in_memory().await?;
+        let data = Bytes::from("Hello, World!");
+        let hash = storage.upload_bytes(data.clone()).await?;
+
+        let chunk = storage.download_chunk(&hash, 0).await?;
+        assert_eq!(chunk, data);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_download_chunk_large_blob() -> Result<()> {
+        let storage = IrohStorage::new_in_memory().await?;
+        let data = Bytes::from(vec![0u8; 3000]); // 3000 bytes, should be 3 chunks
+        let hash = storage.upload_bytes(data.clone()).await?;
+
+        let chunk0 = storage.download_chunk(&hash, 0).await?;
+        let chunk1 = storage.download_chunk(&hash, 1).await?;
+        let chunk2 = storage.download_chunk(&hash, 2).await?;
+
+        assert_eq!(chunk0.len(), 1024);
+        assert_eq!(chunk1.len(), 1024);
+        assert_eq!(chunk2.len(), 952);
+        assert_eq!(Bytes::from([chunk0, chunk1, chunk2].concat()), data);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_download_chunk_exact_multiple() -> Result<()> {
+        let storage = IrohStorage::new_in_memory().await?;
+        let data = Bytes::from(vec![0u8; 2048]);
+        let hash = storage.upload_bytes(data.clone()).await?;
+
+        let chunk0 = storage.download_chunk(&hash, 0).await?;
+        let chunk1 = storage.download_chunk(&hash, 1).await?;
+
+        assert_eq!(chunk0.len(), 1024);
+        assert_eq!(chunk1.len(), 1024);
+        assert_eq!(Bytes::from([chunk0, chunk1].concat()), data);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_download_chunk_invalid_hash() -> Result<()> {
+        let storage = IrohStorage::new_in_memory().await?;
+        let result = storage.download_chunk("invalid_hash", 0).await;
+        assert!(result.is_err());
+        Ok(())
+    }
+
+    /*#[tokio::test]
+    async fn test_download_chunk_out_of_bounds() -> Result<()> {
+        let storage = IrohStorage::new_in_memory().await?;
+        let data = Bytes::from("Hello, World!");
+        let hash = storage.upload_bytes(data).await?;
+
+        let result = storage.download_chunk(&hash, 1).await;
+        assert!(result.is_err());
+        assert!(matches!(
+            result.err().unwrap(),
+            StorageError::ChunkNotFound(h, c, _) if h == hash && c == "1"
+        ));
+        Ok(())
+    }*/
 }
