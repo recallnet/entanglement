@@ -72,17 +72,3 @@ pub struct ParityGrid {
     pub grid: Grid,
     pub strand_type: StrandType,
 }
-
-pub struct Lattice {
-    parity_grids: Vec<ParityGrid>,
-}
-
-impl Lattice {
-    pub fn new(parity_grids: Vec<ParityGrid>) -> Self {
-        Self { parity_grids }
-    }
-
-    pub fn get_parities(&self) -> &Vec<ParityGrid> {
-        &self.parity_grids
-    }
-}

@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::lattice::StrandType;
+use crate::parity::StrandType;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Metadata {

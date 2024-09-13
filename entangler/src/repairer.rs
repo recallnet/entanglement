@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0, MIT
 
 use crate::grid::{Dir, Grid};
-use crate::lattice::ParityGrid;
+use crate::parity::ParityGrid;
 use anyhow::Result;
 use storage::{Error as StorageError, Storage};
 
-use crate::metadata::Metadata;
+use crate::Metadata;
 use bytes::Bytes;
 
 pub struct Repairer<'a, 'b, T: Storage> {

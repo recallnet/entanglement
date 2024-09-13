@@ -3,8 +3,9 @@
 
 pub mod entangler;
 pub use entangler::*;
-pub mod lattice;
 pub mod metadata;
+pub mod parity;
+pub use metadata::*;
 
 mod executer;
 mod grid;

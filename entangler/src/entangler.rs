@@ -9,8 +9,8 @@ use storage::{ByteStream, Error as StorageError, Storage};
 
 use crate::executer;
 use crate::grid::Grid;
-use crate::metadata::Metadata;
 use crate::repairer::Repairer;
+use crate::Metadata;
 
 const CHUNK_SIZE: usize = 1024;
 
@@ -94,13 +94,13 @@ impl<T: Storage> Entangler<T> {
         let orig_grid = Grid::new(chunks, usize::min(self.s as usize, num_chunks))?;
 
         let exec = executer::Executer::new(self.alpha);
-        let lattice = exec.execute(orig_grid)?;
+        let parities = exec.execute(orig_grid)?;
 
         let num_bytes = bytes.len();
         let orig_hash = self.storage.upload_bytes(bytes).await?;
 
         let mut parity_hashes = HashMap::new();
-        for parity_grid in lattice.get_parities() {
+        for parity_grid in parities {
             let data = parity_grid.grid.assemble_data();
             let parity_hash = self.storage.upload_bytes(data).await?;
             parity_hashes.insert(parity_grid.strand_type, parity_hash);

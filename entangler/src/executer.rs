@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0, MIT
 
 use crate::grid::{self, Grid, Pos};
-use crate::lattice::{Lattice, ParityGrid, StrandType};
+use crate::parity::{ParityGrid, StrandType};
 use anyhow::Result;
 
 use bytes::Bytes;
@@ -21,13 +21,13 @@ impl Executer {
 
     /// Executes the entanglement process on the given grid.
     /// It creates a lattice with the original grid and the parity grids.
-    pub fn execute(&self, grid: grid::Grid) -> Result<Lattice> {
+    pub fn execute(&self, grid: grid::Grid) -> Result<Vec<ParityGrid>> {
         let mut parity_grids = Vec::with_capacity(self.alpha as usize);
         let strand_types = vec![StrandType::Left, StrandType::Horizontal, StrandType::Right];
         for i in 0..self.alpha as usize {
             parity_grids.push(create_parity_grid(&grid, strand_types[i])?);
         }
-        return Ok(Lattice::new(parity_grids));
+        return Ok(parity_grids);
     }
 }
 
@@ -151,7 +151,7 @@ mod tests {
         let grid = Grid::new(create_chunks(), 3).unwrap();
 
         let executer = Executer::new(3);
-        let lattice = executer.execute(grid.clone()).unwrap();
+        let parities = executer.execute(grid.clone()).unwrap();
 
         assert_eq!(grid.get_cell(Pos::new(0, 0)), &Bytes::from("a"));
         assert_eq!(grid.get_cell(Pos::new(0, 1)), &Bytes::from("b"));
@@ -163,15 +163,15 @@ mod tests {
         assert_eq!(grid.get_cell(Pos::new(2, 1)), &Bytes::from("h"));
         assert_eq!(grid.get_cell(Pos::new(2, 2)), &Bytes::from("i"));
 
-        assert_eq!(lattice.get_parities().len(), 3);
+        assert_eq!(parities.len(), 3);
 
-        let lh_strand = lattice.get_parities().get(0).unwrap();
+        let lh_strand = parities.get(0).unwrap();
         assert_parity_grid(&lh_strand);
 
-        let h_strand = lattice.get_parities().get(1).unwrap();
+        let h_strand = parities.get(1).unwrap();
         assert_parity_grid(&h_strand);
 
-        let rh_strand = lattice.get_parities().get(2).unwrap();
+        let rh_strand = parities.get(2).unwrap();
         assert_parity_grid(&rh_strand);
     }
 
@@ -180,7 +180,7 @@ mod tests {
         let grid = Grid::new(create_chunks(), 4).unwrap();
 
         let executer = Executer::new(3);
-        let lattice = executer.execute(grid.clone()).unwrap();
+        let parities = executer.execute(grid.clone()).unwrap();
 
         assert_eq!(grid.get_cell(Pos::new(0, 0)), &Bytes::from("a"));
         assert_eq!(grid.get_cell(Pos::new(0, 1)), &Bytes::from("b"));
@@ -194,9 +194,9 @@ mod tests {
 
         assert_eq!(grid.get_cell(Pos::new(2, 0)), &Bytes::from("i"));
 
-        assert_eq!(lattice.get_parities().len(), 3);
+        assert_eq!(parities.len(), 3);
 
-        let lh_strand = lattice.get_parities().get(0).unwrap();
+        let lh_strand = parities.get(0).unwrap();
         assert_eq!(lh_strand.strand_type, StrandType::Left);
         assert_eq!(lh_strand.grid.get_cell(Pos::new(0, 0)), &entangle("a", "h"));
         assert_eq!(lh_strand.grid.get_cell(Pos::new(0, 1)), &entangle("b", "e"));
@@ -208,7 +208,7 @@ mod tests {
         assert_eq!(lh_strand.grid.get_cell(Pos::new(1, 3)), &entangle("h", "a"));
         assert_eq!(lh_strand.grid.get_cell(Pos::new(2, 0)), &entangle("i", "c"));
 
-        let h_strand = lattice.get_parities().get(1).unwrap();
+        let h_strand = parities.get(1).unwrap();
         assert_eq!(h_strand.strand_type, StrandType::Horizontal);
         assert_eq!(h_strand.grid.get_cell(Pos::new(0, 0)), &entangle("a", "e"));
         assert_eq!(h_strand.grid.get_cell(Pos::new(0, 1)), &entangle("b", "f"));
@@ -220,7 +220,7 @@ mod tests {
         assert_eq!(h_strand.grid.get_cell(Pos::new(1, 3)), &entangle("h", "d"));
         assert_eq!(h_strand.grid.get_cell(Pos::new(2, 0)), &entangle("i", "a"));
 
-        let rh_strand = lattice.get_parities().get(2).unwrap();
+        let rh_strand = parities.get(2).unwrap();
         assert_eq!(rh_strand.strand_type, StrandType::Right);
         assert_eq!(rh_strand.grid.get_cell(Pos::new(0, 0)), &entangle("a", "f"));
         assert_eq!(rh_strand.grid.get_cell(Pos::new(0, 1)), &entangle("b", "g"));
@@ -262,11 +262,11 @@ mod tests {
         let grid = Grid::new(chunks.clone(), HEIGHT).unwrap();
 
         let executer = Executer::new(3);
-        let lattice = executer.execute(grid.clone()).unwrap();
+        let parities = executer.execute(grid.clone()).unwrap();
 
-        assert_eq!(lattice.get_parities().len(), HEIGHT);
+        assert_eq!(parities.len(), HEIGHT);
 
-        for parity_grid in lattice.get_parities() {
+        for parity_grid in parities {
             let assembled_data = parity_grid.grid.assemble_data();
             assert_eq!(assembled_data.len(), WIDTH * HEIGHT * 8);
 
