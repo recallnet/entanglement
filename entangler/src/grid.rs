@@ -13,26 +13,6 @@ pub enum Error {
     InvalidNumItems(usize, usize),
 }
 
-/// Grid represents a 2D grid of chunks built in column-first order.
-/// The grid is wrapped in both dimensions, so that negative or out-of-bound indices wrap
-/// around to the end or a side of the grid.
-///
-/// The Grid is leap window (LW) aligned, meaning that when wrapping along x axis, the grid
-/// will ignore the number of actual items (or available columns) and calculate the wrapping
-/// index based on the number of items that would be present if the grid was fully populated.
-///   Example:
-///    - Grid with 7 items and height 3 would have 3 columns and 3 rows. Here the wrapping in
-/// straightforward, as number of columns, 3, is equal to LW width
-///    - Grid with 7 items and height 4 would have 2 columns and 4 rows. Here we have 2 columns
-/// and LW width = 4. So, when wrapping, the grid will consider 4 columns and wrap around to
-/// the first column.
-#[derive(Debug, Clone)]
-pub struct Grid {
-    data: Vec<Vec<Bytes>>,
-    num_items: usize,
-    lw_aligned_width: usize,
-}
-
 fn build_column_first_grid(data: Vec<Bytes>, height: usize) -> Result<Vec<Vec<Bytes>>, Error> {
     if height == 0 {
         return Err(Error::InvalidHeight(height));
@@ -58,20 +38,13 @@ fn mod_int(int: i64, m: usize) -> usize {
     ((int % w + w) % w) as usize
 }
 
-fn calculate_lw_aligned_width(num_items: usize, height: usize) -> usize {
-    let lw = height * height;
-    ((num_items + lw - 1) / lw) * height
-}
-
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Dir {
     UL,
-    U,
     UR,
     L,
     R,
     DL,
-    D,
     DR,
 }
 
@@ -79,31 +52,34 @@ impl Dir {
     pub fn to_i64(&self) -> (i64, i64) {
         match self {
             Dir::UL => (-1, -1),
-            Dir::U => (0, -1),
             Dir::UR => (1, -1),
             Dir::L => (-1, 0),
             Dir::R => (1, 0),
             Dir::DL => (-1, 1),
-            Dir::D => (0, 1),
             Dir::DR => (1, 1),
         }
     }
-    
+
     pub fn opposite(&self) -> Dir {
         match self {
             Dir::UL => Dir::DR,
-            Dir::U => Dir::D,
             Dir::UR => Dir::DL,
             Dir::L => Dir::R,
             Dir::R => Dir::L,
             Dir::DL => Dir::UR,
-            Dir::D => Dir::U,
             Dir::DR => Dir::UL,
+        }
+    }
+
+    pub fn is_forward(&self) -> bool {
+        match self {
+            Dir::UL | Dir::L | Dir::DL => false,
+            Dir::UR | Dir::R | Dir::DR => true,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Pos {
     pub x: i64,
     pub y: i64,
@@ -140,10 +116,95 @@ impl Pos {
     }
 }
 
+impl std::ops::Add<Dir> for Pos {
+    type Output = Pos;
+
+    fn add(self, rhs: Dir) -> Self::Output {
+        let dir = rhs.to_i64();
+        Pos {
+            x: self.x + dir.0,
+            y: self.y + dir.1,
+        }
+    }
+}
+
+impl std::ops::Sub<Dir> for Pos {
+    type Output = Pos;
+
+    fn sub(self, rhs: Dir) -> Self::Output {
+        let dir = rhs.to_i64();
+        Pos {
+            x: self.x - dir.0,
+            y: self.y - dir.1,
+        }
+    }
+}
+
 impl Pos {
     pub fn new<T: TryInto<i64>, U: TryInto<i64>>(x: T, y: U) -> Self {
         (x, y).into()
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Positioner {
+    height: usize,
+    num_items: usize,
+    lw_aligned_width: usize,
+}
+
+impl Positioner {
+    pub fn new(height: usize, num_items: usize) -> Self {
+        let lw_aligned_width = Self::calculate_lw_aligned_width(num_items, height);
+        Self {
+            height,
+            num_items,
+            lw_aligned_width,
+        }
+    }
+
+    fn calculate_lw_aligned_width(num_items: usize, height: usize) -> usize {
+        let lw = height * height;
+        ((num_items + lw - 1) / lw) * height
+    }
+
+    pub fn normalize(&self, pos: Pos) -> Pos {
+        let x = self.mod_x(pos.x);
+        let y = self.mod_y(pos.y);
+        Pos::new(x as i64, y as i64)
+    }
+
+    fn mod_x(&self, x: i64) -> usize {
+        mod_int(x as i64, self.lw_aligned_width)
+    }
+
+    fn mod_y(&self, y: i64) -> usize {
+        mod_int(y as i64, self.height)
+    }
+
+    pub fn has_cell(&self, pos: Pos) -> bool {
+        let normalized = self.normalize(pos);
+        (normalized.x as usize * self.height + normalized.y as usize) < self.num_items
+    }
+}
+
+/// Grid represents a 2D grid of chunks built in column-first order.
+/// The grid is wrapped in both dimensions, so that negative or out-of-bound indices wrap
+/// around to the end or a side of the grid.
+///
+/// The Grid is leap window (LW) aligned, meaning that when wrapping along x axis, the grid
+/// will ignore the number of actual items (or available columns) and calculate the wrapping
+/// index based on the number of items that would be present if the grid was fully populated.
+///   Example:
+///    - Grid with 7 items and height 3 would have 3 columns and 3 rows. Here the wrapping in
+/// straightforward, as number of columns, 3, is equal to LW width
+///    - Grid with 7 items and height 4 would have 2 columns and 4 rows. Here we have 2 columns
+/// and LW width = 4. So, when wrapping, the grid will consider 4 columns and wrap around to
+/// the first column.
+#[derive(Debug, Clone)]
+pub struct Grid {
+    data: Vec<Vec<Bytes>>,
+    positioner: Positioner,
 }
 
 impl Grid {
@@ -151,8 +212,7 @@ impl Grid {
         let num_items = data.len();
         Ok(Self {
             data: build_column_first_grid(data, height)?,
-            num_items,
-            lw_aligned_width: calculate_lw_aligned_width(num_items, height),
+            positioner: Positioner::new(height, num_items),
         })
     }
 
@@ -183,8 +243,7 @@ impl Grid {
 
         Ok(Self {
             data: grid,
-            num_items,
-            lw_aligned_width: calculate_lw_aligned_width(num_items, height),
+            positioner: Positioner::new(height, num_items),
         })
     }
 
@@ -197,13 +256,13 @@ impl Grid {
 
     /// Sets the value of a cell at the given coordinates.
     pub fn set_cell(&mut self, pos: Pos, value: Bytes) {
-        let mod_x = self.mod_x(pos.x);
-        let mod_y = self.mod_y(pos.y);
-        self.data[mod_x][mod_y] = value;
+        let norm_pos = self.positioner.normalize(pos);
+        self.data[norm_pos.x as usize][norm_pos.y as usize] = value;
     }
 
     pub fn get_cell(&self, pos: Pos) -> &Bytes {
-        &self.data[self.mod_x(pos.x)][self.mod_y(pos.y)]
+        let norm_pos = self.positioner.normalize(pos);
+        &self.data[norm_pos.x as usize][norm_pos.y as usize]
     }
 
     pub fn try_get_cell(&self, pos: Pos) -> Option<&Bytes> {
@@ -212,14 +271,6 @@ impl Grid {
         } else {
             None
         }
-    }
-
-    fn mod_x(&self, x: i64) -> usize {
-        mod_int(x, self.lw_aligned_width)
-    }
-
-    fn mod_y(&self, y: i64) -> usize {
-        mod_int(y, self.get_height())
     }
 
     /// Returns the width of the grid, i.e., the number of actual columns.
@@ -233,9 +284,7 @@ impl Grid {
     }
 
     pub fn has_cell(&self, pos: Pos) -> bool {
-        let x = self.mod_x(pos.x);
-        let y = self.mod_y(pos.y);
-        x * self.get_height() + y < self.num_items
+        self.positioner.has_cell(pos)
     }
 
     /// Assembles the grid data into a single Bytes object.
@@ -250,7 +299,7 @@ impl Grid {
     }
 
     pub fn get_num_items(&self) -> usize {
-        self.num_items
+        self.positioner.num_items
     }
 }
 

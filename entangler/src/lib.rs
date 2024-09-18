@@ -9,4 +9,5 @@ pub use metadata::*;
 
 mod executer;
 mod grid;
+mod lattice;
 mod repairer;

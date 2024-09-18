@@ -20,14 +20,31 @@ impl StrandType {
             StrandType::Right => 1,
         }
     }
+
+    pub fn to_opposite_dir(self) -> Dir {
+        Dir::from(self).opposite()
+    }
 }
 
-impl Into<Dir> for StrandType {
-    fn into(self) -> Dir {
-        match self {
+impl From<StrandType> for Dir {
+    fn from(strand_type: StrandType) -> Self {
+        match strand_type {
             StrandType::Left => Dir::UR,
             StrandType::Horizontal => Dir::R,
             StrandType::Right => Dir::DR,
+        }
+    }
+}
+
+impl From<Dir> for StrandType {
+    fn from(dir: Dir) -> Self {
+        match dir {
+            Dir::UR => StrandType::Left,
+            Dir::R => StrandType::Horizontal,
+            Dir::DR => StrandType::Right,
+            Dir::UL => StrandType::Right,
+            Dir::L => StrandType::Horizontal,
+            Dir::DL => StrandType::Left,
         }
     }
 }
