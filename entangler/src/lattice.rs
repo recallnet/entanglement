@@ -121,7 +121,7 @@ impl Graph {
 
         let mut data_node = DataNode::new(chunk);
 
-        for dir in [Dir::UR, Dir::R, Dir::DR, Dir::DL, Dir::L, Dir::UL] {
+        for dir in Dir::all() {
             let parity_pos = if dir.is_forward() { pos } else { pos + dir };
             let parity_id = NodeId::new(dir.into(), parity_pos);
             if let Some(Node::Parity(parity_node)) = self.nodes.get_mut(&parity_id) {

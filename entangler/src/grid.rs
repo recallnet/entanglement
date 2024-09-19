@@ -49,6 +49,10 @@ pub enum Dir {
 }
 
 impl Dir {
+    pub fn all() -> [Dir; 6] {
+       [Dir::UL, Dir::UR, Dir::L, Dir::R, Dir::DL, Dir::DR]
+    }
+
     pub fn to_i64(&self) -> (i64, i64) {
         match self {
             Dir::UL => (-1, -1),
