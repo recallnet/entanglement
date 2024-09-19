@@ -133,10 +133,18 @@ impl Storage for FakeStorage {
             ));
         }
 
-        self.data
-            .lock()
-            .unwrap()
-            .get(hash)
+        let data = self.data.lock().unwrap();
+        let chunks = data.get(hash);
+        if let Some(chunks) = chunks {
+            if chunk_id >= chunks.len() {
+                return Err(StorageError::ChunkNotFound(
+                    chunk_id.to_string(),
+                    hash.to_string(),
+                    anyhow::anyhow!("Chunk not found"),
+                ));
+            }
+        }
+        chunks
             .map(|chunks| chunks[chunk_id].clone())
             .ok_or_else(|| StorageError::BlobNotFound(hash.to_string()))
     }
@@ -332,16 +340,19 @@ mod tests {
         assert!(matches!(result, Err(StorageError::BlobNotFound(_))));
     }
 
-    /*#[tokio::test]
+    #[tokio::test]
     async fn test_download_chunk_out_of_bounds() -> Result<()> {
         let storage = FakeStorage::new();
         let data = vec![0u8; 3000]; // 3 chunks
         let hash = storage.upload_bytes(data).await?;
 
         let result = storage.download_chunk(&hash, 3).await;
-        assert!(matches!(result, Err(StorageError::BlobNotFound(_))));
+        assert!(matches!(
+            result.err().unwrap(),
+            StorageError::ChunkNotFound(c, h, _) if h == hash && c == "3"
+        ));
         Ok(())
-    }*/
+    }
 
     #[tokio::test]
     async fn test_fake_failed_chunk_download() -> Result<()> {

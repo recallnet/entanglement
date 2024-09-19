@@ -171,7 +171,7 @@ impl Storage for IrohStorage {
             .blobs()
             .read_at_to_bytes(hash, offset, Some(CHUNK_SIZE))
             .await
-            .map_err(|e| StorageError::ChunkNotFound(hash.to_string(), e.to_string(), e))
+            .map_err(|e| StorageError::ChunkNotFound(chunk_id.to_string(), hash.to_string(), e))
     }
 }
 
@@ -303,7 +303,7 @@ mod tests {
         Ok(())
     }
 
-    /*#[tokio::test]
+    #[tokio::test]
     async fn test_download_chunk_out_of_bounds() -> Result<()> {
         let storage = IrohStorage::new_in_memory().await?;
         let data = Bytes::from("Hello, World!");
@@ -313,8 +313,8 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.err().unwrap(),
-            StorageError::ChunkNotFound(h, c, _) if h == hash && c == "1"
+            StorageError::ChunkNotFound(c, h, _) if h == hash && c == "1"
         ));
         Ok(())
-    }*/
+    }
 }
