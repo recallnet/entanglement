@@ -48,7 +48,7 @@ async fn load_parity_data_to_node<S>(
 ) -> Result<()> {
     let metadata_hash = iroh::blobs::Hash::from_str(metadata_hash)?;
 
-    let node_addr = source_node.node_addr().await?;
+    let node_addr = source_node.net().node_addr().await?;
     target_node
         .blobs()
         .download(metadata_hash, node_addr.clone())
