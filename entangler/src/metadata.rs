@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use crate::parity::StrandType;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Metadata {
     pub orig_hash: String,
     pub parity_hashes: HashMap<StrandType, String>,

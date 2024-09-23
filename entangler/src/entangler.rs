@@ -4,12 +4,13 @@
 use anyhow::Result;
 use bytes::Bytes;
 use futures::StreamExt;
+use iroh::blobs::Hash;
 use std::collections::HashMap;
 use storage::{ByteStream, Error as StorageError, Storage};
 
 use crate::executer;
-use crate::grid::Grid;
-use crate::repairer::Repairer;
+use crate::grid::{Grid, Pos};
+use crate::repairer::{ChunkInfo, Repairer};
 use crate::Metadata;
 
 const CHUNK_SIZE: usize = 1024;
@@ -143,44 +144,68 @@ impl<T: Storage> Entangler<T> {
         match self.storage.iter_chunks(hash).await {
             Ok(stream) => {
                 let num_chunks = (metadata.num_bytes as usize + CHUNK_SIZE - 1) / CHUNK_SIZE;
-                let (available_chunks, missing_indexes) =
-                    self.find_missing_chunks(stream, num_chunks).await?;
-                self.repair_chunks(metadata, available_chunks, missing_indexes)
+                let (available_chunks, missing_indexes, chunk_id_map) = self
+                    .analyze_chunks(stream, num_chunks, metadata.s as usize)
+                    .await?;
+                self.repair_chunks(metadata, available_chunks, missing_indexes, chunk_id_map)
                     .await
             }
             Err(e) => return Err(Error::StorageError(e.into())),
         }
     }
 
-    async fn find_missing_chunks(
+    async fn analyze_chunks(
         &self,
         mut stream: ByteStream<T::ChunkId>,
         num_chunks: usize,
-    ) -> Result<(Vec<Bytes>, Vec<usize>), Error> {
+        grid_height: usize,
+    ) -> Result<
+        (
+            Vec<(T::ChunkId, Bytes)>,
+            Vec<T::ChunkId>,
+            HashMap<T::ChunkId, Pos>,
+        ),
+        Error,
+    > {
         let mut missing_indexes = Vec::new();
-        let mut available_chunks = vec![Bytes::new(); num_chunks];
+        let mut available_chunks = vec![(T::ChunkId::default(), Bytes::new()); num_chunks];
+        let mut chunk_id_map = HashMap::new();
         let mut index = 0;
-        while let Some((_, chunk_result)) = stream.next().await {
+        while let Some((chunk_id, chunk_result)) = stream.next().await {
+            let pos = Pos::new(index / grid_height, index % grid_height);
             match chunk_result {
-                Ok(chunk) => available_chunks[index] = chunk,
-                Err(_) => missing_indexes.push(index),
+                Ok(chunk) => available_chunks[index] = (chunk_id.clone(), chunk),
+                Err(_) => {
+                    available_chunks[index] = (chunk_id.clone(), Bytes::new());
+                    missing_indexes.push(chunk_id.clone());
+                }
             }
+            chunk_id_map.insert(chunk_id, pos);
             index += 1;
         }
 
-        Ok((available_chunks, missing_indexes))
+        Ok((available_chunks, missing_indexes, chunk_id_map))
     }
 
     async fn repair_chunks(
         &self,
         metadata: Metadata,
-        chunks: Vec<Bytes>,
-        missing_indexes: Vec<usize>,
+        chunks: Vec<(T::ChunkId, Bytes)>,
+        missing_indexes: Vec<T::ChunkId>,
+        id_to_pos_map: HashMap<T::ChunkId, Pos>,
     ) -> std::result::Result<Bytes, Error> {
-        let mut grid =
-            Grid::new(chunks, metadata.s as usize).map_err(|e| Error::Other(e.into()))?;
+        let mut grid = Grid::new(
+            chunks.iter().map(|(_, b)| b.clone()).collect(),
+            metadata.s as usize,
+        )
+        .map_err(|e| Error::Other(e.into()))?;
 
-        Repairer::new(&self.storage, &mut grid, metadata)
+        let mut pos_to_id_map: HashMap<Pos, T::ChunkId> = HashMap::new();
+        chunks.iter().enumerate().for_each(|(i, (c, _))| {
+            pos_to_id_map.insert(grid.index_to_pos(i), c.clone());
+        });
+
+        Repairer::new(&self.storage, &mut grid, metadata, pos_to_id_map, id_to_pos_map)
             .repair_chunks(missing_indexes.clone())
             .await?;
 

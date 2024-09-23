@@ -50,7 +50,7 @@ pub enum Dir {
 
 impl Dir {
     pub fn all() -> [Dir; 6] {
-       [Dir::UL, Dir::UR, Dir::L, Dir::R, Dir::DL, Dir::DR]
+        [Dir::UL, Dir::UR, Dir::L, Dir::R, Dir::DL, Dir::DR]
     }
 
     pub fn to_i64(&self) -> (i64, i64) {
@@ -116,6 +116,20 @@ impl Pos {
         Pos {
             x: self.x + dx * distance as i64,
             y: self.y + dy * distance as i64,
+        }
+    }
+
+    pub fn dir_to(&self, other: Pos) -> Option<Dir> {
+        let dx = other.x - self.x;
+        let dy = other.y - self.y;
+        match (dx, dy) {
+            (-1, -1) => Some(Dir::UL),
+            (1, -1) => Some(Dir::UR),
+            (-1, 0) => Some(Dir::L),
+            (1, 0) => Some(Dir::R),
+            (-1, 1) => Some(Dir::DL),
+            (1, 1) => Some(Dir::DR),
+            _ => None,
         }
     }
 }
@@ -189,6 +203,26 @@ impl Positioner {
     pub fn has_cell(&self, pos: Pos) -> bool {
         let normalized = self.normalize(pos);
         (normalized.x as usize * self.height + normalized.y as usize) < self.num_items
+    }
+
+    pub fn determine_dir(&self, from: Pos, mut to: Pos) -> Option<Dir> {
+        match from.dir_to(to) {
+            Some(dir) => Some(dir),
+            None => {
+                if from.x == 0 {
+                    to.x -= self.lw_aligned_width as i64;
+                } else if to.x == 0 {
+                    to.x += self.lw_aligned_width as i64;
+                }
+
+                if from.y == 0 {
+                    to.y -= self.height as i64;
+                } else if from.y == 0 {
+                    to.y += self.height as i64;
+                }
+                from.dir_to(to)
+            }
+        }
     }
 }
 

@@ -3,13 +3,13 @@
 
 use anyhow::Result;
 use bytes::{BufMut, Bytes, BytesMut};
-use entangler::{self, lattice::StrandType, metadata::Metadata, Entangler};
+use entangler::{self, parity::StrandType, Entangler, Metadata};
 use std::str::FromStr;
 use storage::{self, mock::FakeStorage, Storage};
 
-const HEIGHT: usize = 3;
+const HEIGHT: usize = 5;
 // we choose WIDTH to be multiple of HEIGHT to avoid complex strand wrapping calculations
-const WIDTH: usize = 6;
+const WIDTH: usize = 10;
 const NUM_CHUNKS: usize = HEIGHT * WIDTH;
 const CHUNK_SIZE: usize = 1024;
 
@@ -234,6 +234,16 @@ async fn test_entangler_repair_scenarios() -> Result<()> {
             should_succeed: true,
         },
         TestCase {
+            name: "several disjoint chunks are missing",
+            setup: |st, metadata| {
+                st.fake_failed_chunks(&metadata.orig_hash, vec![1, 3, 10, 13, 21, 23]);
+
+                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Left]);
+                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Horizontal]);
+            },
+            should_succeed: true,
+        },
+        TestCase {
             name: "no parity is available, should fail",
             setup: |st, metadata| {
                 st.fake_failed_chunks(&metadata.orig_hash, vec![2]);
@@ -244,6 +254,54 @@ async fn test_entangler_repair_scenarios() -> Result<()> {
             },
             should_succeed: false,
         },
+        /*TestCase {
+            name: "an island of missing chunks",
+            setup: |st, metadata| {
+                //  0  5  .  5 20 25
+                //  1  .  .  . 21 26
+                //  .  .  .  .  . 27
+                //  3  .  .  . 23 28
+                //  4  9  . 19 24 29
+                st.fake_failed_chunks(
+                    &metadata.orig_hash,
+                    vec![2, 6, 7, 8, 10, 11, 12, 13, 14, 16, 17, 18, 22],
+                );
+
+                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Left]);
+                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Horizontal]);
+            },
+            should_succeed: true,
+        },
+        TestCase {
+            name: "several islands of missing chunks",
+            setup: |st, metadata| {
+                //  0  5  . 15 20 25  .  .  .  .
+                //  1  .  .  . 21 26  .  .  . 46
+                //  .  .  .  .  . 27  .  . 42 47
+                //  3  .  .  . 23 28 33 38 43  .
+                //  4  9  . 19 24 29 34 39 44  .
+                st.fake_failed_chunks(
+                    &metadata.orig_hash,
+                    vec![
+                        2, 6, 7, 8, 10, 11, 12, 13, 14, 16, 17, 18, 22, 30, 31, 32, 35, 36, 37, 40,
+                        41, 45, 48, 49,
+                    ],
+                );
+
+                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Horizontal]);
+                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Right]);
+            },
+            should_succeed: true,
+        },
+        TestCase {
+            name: "only 1 chunk is available",
+            setup: |st, metadata| {
+                st.fake_failed_chunks(&metadata.orig_hash, (0..12).chain(13..CHUNK_SIZE).collect());
+
+                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Left]);
+            },
+            should_succeed: true,
+        },*/
     ];
 
     for case in test_cases {

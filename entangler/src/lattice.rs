@@ -9,9 +9,9 @@ use std::borrow::Borrow;
 use std::collections::HashMap;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-struct NodeId {
-    grid_type: GridType,
-    pos: Pos,
+pub struct NodeId {
+    pub grid_type: GridType,
+    pub pos: Pos,
 }
 
 impl NodeId {
@@ -25,7 +25,7 @@ impl NodeId {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-enum GridType {
+pub enum GridType {
     Data,
     ParityLeft,
     ParityHorizontal,
@@ -65,8 +65,8 @@ impl TryInto<StrandType> for GridType {
 }
 
 #[derive(Debug, Clone)]
-struct DataNode {
-    chunk: Bytes,
+pub struct DataNode {
+    pub chunk: Bytes,
     parities: HashMap<Dir, NodeId>,
 }
 
@@ -80,8 +80,8 @@ impl DataNode {
 }
 
 #[derive(Debug, Clone)]
-struct ParityNode {
-    chunk: Bytes,
+pub struct ParityNode {
+    pub chunk: Bytes,
     curr_data: Option<NodeId>,
     next_data: Option<NodeId>,
 }
@@ -97,13 +97,13 @@ impl ParityNode {
 }
 
 #[derive(Debug, Clone)]
-enum Node {
+pub enum Node {
     Data(DataNode),
     Parity(ParityNode),
 }
 
 #[derive(Debug)]
-struct Graph {
+pub struct Graph {
     nodes: HashMap<NodeId, Node>,
     positioner: Positioner,
 }
@@ -137,6 +137,21 @@ impl Graph {
         self.nodes.insert(data_id, Node::Data(data_node));
     }
 
+    pub fn remove_data_node(&mut self, pos: Pos) {
+        let data_id = NodeId::new_data_id(self.positioner.normalize(pos));
+        if let Some(Node::Data(data_node)) = self.nodes.remove(&data_id) {
+            for parity_id in data_node.parities.values() {
+                if let Some(Node::Parity(parity_node)) = self.nodes.get_mut(parity_id) {
+                    if parity_node.curr_data == Some(data_id) {
+                        parity_node.curr_data = None;
+                    } else if parity_node.next_data == Some(data_id) {
+                        parity_node.next_data = None;
+                    }
+                }
+            }
+        }
+    }
+
     pub fn add_parity_node(&mut self, pos: Pos, chunk: Bytes, strand_type: StrandType) {
         let pos = self.positioner.normalize(pos);
         let parity_id = NodeId::new(strand_type.into(), pos);
@@ -164,7 +179,11 @@ impl Graph {
         self.nodes.get(id)
     }
 
-    fn get_data_node(&self, pos: Pos) -> Option<&DataNode> {
+    pub fn has_data_node(&self, pos: Pos) -> bool {
+        self.nodes.contains_key(&NodeId::new_data_id(pos))
+    }
+
+    pub fn get_data_node(&self, pos: Pos) -> Option<&DataNode> {
         if let Some(Node::Data(node)) = self.nodes.get(&NodeId::new_data_id(pos)) {
             Some(node)
         } else {
@@ -172,11 +191,68 @@ impl Graph {
         }
     }
 
-    fn get_parity_node(&self, pos: Pos, strand_type: StrandType) -> Option<&ParityNode> {
+    pub fn get_parity_node(&self, pos: Pos, strand_type: StrandType) -> Option<&ParityNode> {
         if let Some(Node::Parity(node)) = self.nodes.get(&NodeId::new(strand_type.into(), pos)) {
             Some(node)
         } else {
             None
+        }
+    }
+
+    pub fn get_parity_node_along_dir(&self, pos: Pos, dir: Dir) -> Option<&ParityNode> {
+        let pos = if dir.is_forward() {
+            pos
+        } else {
+            self.positioner.normalize(pos + dir)
+        };
+        if let Some(Node::Parity(node)) = self.nodes.get(&NodeId::new(dir.into(), pos)) {
+            Some(node)
+        } else {
+            None
+        }
+    }
+
+    pub fn has_parity_node_along_dir(&self, pos: Pos, dir: Dir) -> bool {
+        self.get_parity_node_along_dir(pos, dir).is_some()
+    }
+
+    pub fn get_neighbor_data_nodes(&self, pos: Pos) -> Vec<&Node> {
+        let directions = Dir::all();
+        let mut neighbors = Vec::with_capacity(directions.len());
+
+        for &dir in &directions {
+            let neighbor_id = NodeId::new_data_id(pos.adjacent(dir));
+            if let Some(node) = self.nodes.get(&neighbor_id) {
+                neighbors.push(node);
+            }
+        }
+
+        neighbors
+    }
+
+    pub fn get_missing_neighbors_data_nodes(&self, pos: Pos) -> Vec<Pos> {
+        let directions = Dir::all();
+        let mut neighbors = Vec::with_capacity(directions.len());
+
+        for &dir in &directions {
+            let neighbor_id = NodeId::new_data_id(pos.adjacent(dir));
+            if !self.nodes.contains_key(&neighbor_id) {
+                neighbors.push(pos.adjacent(dir));
+            }
+        }
+
+        neighbors
+    }
+
+    pub fn for_each_neighbor_data_node<F>(&self, pos: Pos, mut f: F)
+    where
+        F: FnMut(&Node),
+    {
+        for dir in Dir::all() {
+            let neighbor_id = NodeId::new_data_id(pos.adjacent(dir));
+            if let Some(node) = self.nodes.get(&neighbor_id) {
+                f(node);
+            }
         }
     }
 }

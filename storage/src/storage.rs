@@ -29,8 +29,8 @@ pub enum Error {
 pub type ByteStream<T> = Pin<Box<dyn Stream<Item = (T, Result<Bytes>)> + Send>>;
 
 #[async_trait]
-pub trait Storage: Send + Clone {
-    type ChunkId;
+pub trait Storage: Send + Clone + Unpin {
+    type ChunkId: Clone + Default + PartialEq + Eq + std::hash::Hash + Unpin;
 
     async fn upload_bytes(&self, bytes: impl Into<Bytes> + Send) -> Result<String>;
     async fn download_bytes(&self, hash: &str) -> Result<Bytes, Error>;
