@@ -10,7 +10,7 @@ use storage::{ByteStream, Error as StorageError, Storage};
 
 use crate::executer;
 use crate::grid::{Grid, Pos};
-use crate::repairer::{ChunkInfo, Repairer};
+use crate::repairer::{self, ChunkInfo, Repairer};
 use crate::Metadata;
 
 const CHUNK_SIZE: usize = 1024;
@@ -68,6 +68,9 @@ pub enum Error {
 
     #[error("Error occurred: {0}")]
     Other(#[from] anyhow::Error),
+
+    #[error("Repairing failed: {0}")]
+    Repair(#[from] repairer::Error),
 }
 
 impl<T: Storage> Entangler<T> {
@@ -205,9 +208,15 @@ impl<T: Storage> Entangler<T> {
             pos_to_id_map.insert(grid.index_to_pos(i), c.clone());
         });
 
-        Repairer::new(&self.storage, &mut grid, metadata, pos_to_id_map, id_to_pos_map)
-            .repair_chunks(missing_indexes.clone())
-            .await?;
+        Repairer::new(
+            &self.storage,
+            &mut grid,
+            metadata,
+            pos_to_id_map,
+            id_to_pos_map,
+        )
+        .repair_chunks(missing_indexes.clone())
+        .await?;
 
         Ok(grid.assemble_data())
     }

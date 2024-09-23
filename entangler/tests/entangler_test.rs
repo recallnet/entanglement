@@ -194,6 +194,12 @@ async fn if_chunk_is_missing_and_metadata_is_provided_should_repair() -> Result<
     Ok(())
 }
 
+fn make_parity_unavailable(st: &FakeStorage, metadata: &Metadata, strand: StrandType) {
+    let hash = &metadata.parity_hashes[&strand];
+    st.fake_failed_download(hash);
+    st.fake_failed_chunks(hash, (0..NUM_CHUNKS).collect());
+}
+
 #[tokio::test]
 async fn test_entangler_repair_scenarios() -> Result<()> {
     struct TestCase {
@@ -208,8 +214,8 @@ async fn test_entangler_repair_scenarios() -> Result<()> {
             setup: |st, metadata| {
                 st.fake_failed_chunks(&metadata.orig_hash, vec![2]);
 
-                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Right]);
-                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Horizontal]);
+                make_parity_unavailable(st, metadata, StrandType::Right);
+                make_parity_unavailable(st, metadata, StrandType::Horizontal);
             },
             should_succeed: true,
         },
@@ -218,8 +224,8 @@ async fn test_entangler_repair_scenarios() -> Result<()> {
             setup: |st, metadata| {
                 st.fake_failed_chunks(&metadata.orig_hash, vec![2]);
 
-                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Left]);
-                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Horizontal]);
+                make_parity_unavailable(st, metadata, StrandType::Left);
+                make_parity_unavailable(st, metadata, StrandType::Horizontal);
             },
             should_succeed: true,
         },
@@ -228,8 +234,8 @@ async fn test_entangler_repair_scenarios() -> Result<()> {
             setup: |st, metadata| {
                 st.fake_failed_chunks(&metadata.orig_hash, vec![2]);
 
-                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Left]);
-                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Right]);
+                make_parity_unavailable(st, metadata, StrandType::Left);
+                make_parity_unavailable(st, metadata, StrandType::Right);
             },
             should_succeed: true,
         },
@@ -238,8 +244,8 @@ async fn test_entangler_repair_scenarios() -> Result<()> {
             setup: |st, metadata| {
                 st.fake_failed_chunks(&metadata.orig_hash, vec![1, 3, 10, 13, 21, 23]);
 
-                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Left]);
-                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Horizontal]);
+                make_parity_unavailable(st, metadata, StrandType::Left);
+                make_parity_unavailable(st, metadata, StrandType::Horizontal);
             },
             should_succeed: true,
         },
@@ -248,9 +254,9 @@ async fn test_entangler_repair_scenarios() -> Result<()> {
             setup: |st, metadata| {
                 st.fake_failed_chunks(&metadata.orig_hash, vec![2]);
 
-                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Left]);
-                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Right]);
-                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Horizontal]);
+                make_parity_unavailable(st, metadata, StrandType::Left);
+                make_parity_unavailable(st, metadata, StrandType::Horizontal);
+                make_parity_unavailable(st, metadata, StrandType::Right);
             },
             should_succeed: false,
         },

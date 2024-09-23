@@ -11,11 +11,23 @@ use storage::{Error as StorageError, Storage};
 use crate::Metadata;
 use bytes::Bytes;
 use std::boxed::Box;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::marker::PhantomPinned;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[error("Failed to repair chunks")]
+    FailedToRepairChunks,
+
+    #[error("Storage error: {0}")]
+    StorageError(#[from] StorageError),
+
+    #[error("Error occurred: {0}")]
+    Other(#[source] anyhow::Error),
+}
 
 pub struct Repairer<'a, 'b, T: Storage> {
     metadata: Metadata,
@@ -50,7 +62,7 @@ impl<'a, 'b, T: Storage> Repairer<'a, 'b, T> {
         };
     }
 
-    pub async fn repair_chunks(&mut self, chunks: Vec<T::ChunkId>) -> Result<(), StorageError> {
+    pub async fn repair_chunks(&mut self, chunks: Vec<T::ChunkId>) -> Result<(), Error> {
         let healer = Healer::new(
             self.storage.clone(),
             self.metadata.clone(),
@@ -91,10 +103,11 @@ struct Healer<T: Storage> {
     sick_graph: Graph,
     healthy_graph: Graph,
     sick_nodes: Vec<Pos>,
-    visited: HashSet<NodeId>,
+    visited: HashSet<Pos>,
     positioner: Positioner,
     metadata: Metadata,
     pos_to_id_map: HashMap<Pos, T::ChunkId>,
+    stack: VecDeque<Pos>,
 }
 
 impl<T: Storage> Healer<T> {
@@ -125,79 +138,80 @@ impl<T: Storage> Healer<T> {
             positioner: Positioner::new(grid_height, num_grid_items),
             metadata,
             pos_to_id_map,
+            stack: VecDeque::new(),
         }
     }
 
-    async fn heal(self: Pin<&mut Self>) -> Result<HashMap<Pos, Bytes>, StorageError> {
+    async fn heal(self: Pin<&mut Self>) -> Result<HashMap<Pos, Bytes>, Error> {
         let this = self.get_mut();
-
         let mut res = HashMap::new();
-        let mut i = 0;
-        while i < this.sick_nodes.len() {
-            let pos = this.sick_nodes[i];
-            let pinned = Pin::new(&mut *this);
-            if !pinned.sick_graph.has_data_node(pos) || pinned.heal_data_node(pos).await {
-                this.sick_nodes.swap_remove(i);
-                res.insert(
-                    pos,
-                    this.healthy_graph.get_data_node(pos).unwrap().chunk.clone(),
-                );
-            } else {
-                i += 1;
+
+        for pos in this.sick_nodes.to_owned() {
+            if !this.visited.contains(&pos) {
+                this.stack.push_back(pos);
+                while let Some(current_pos) = this.stack.pop_back() {
+                    if this.visited.contains(&current_pos) {
+                        continue;
+                    }
+                    this.visited.insert(current_pos);
+
+                    if this.heal_data_node(current_pos).await {
+                        res.insert(
+                            current_pos,
+                            this.healthy_graph
+                                .get_data_node(current_pos)
+                                .unwrap()
+                                .chunk
+                                .clone(),
+                        );
+                    }
+                }
             }
+        }
+
+        this.sick_nodes.retain(|&pos| !res.contains_key(&pos));
+        if !this.sick_nodes.is_empty() {
+            return Err(Error::FailedToRepairChunks);
         }
         Ok(res)
     }
 
-    fn heal_data_node<'a>(
-        self: Pin<&'a mut Self>,
-        pos: Pos,
-    ) -> Pin<Box<dyn Future<Output = bool> + 'a>> {
-        Box::pin(async move {
-            let this = self.get_mut();
-            if this.visited.contains(&NodeId::new(GridType::Data, pos)) {
-                return false;
-            }
-            this.visited.insert(NodeId::new(GridType::Data, pos));
-
-            let missing_neighbors = this.sick_graph.get_missing_neighbors_data_nodes(pos);
-            let mut i = 0;
-            while i < missing_neighbors.len() {
-                let neighbor_pos = this.positioner.normalize(missing_neighbors[i]);
-                if let Some(healthy_neighbor) =
-                    this.healthy_graph.get_data_node(neighbor_pos).cloned()
+    async fn heal_data_node(&mut self, pos: Pos) -> bool {
+        let missing_neighbors = self.sick_graph.get_missing_neighbors_data_nodes(pos);
+        for neighbor_pos in missing_neighbors {
+            let neighbor_pos = self.positioner.normalize(neighbor_pos);
+            if let Some(healthy_neighbor) = self.healthy_graph.get_data_node(neighbor_pos).cloned()
+            {
+                if self
+                    .try_heal_with_neighbor_data_node(pos, neighbor_pos, &healthy_neighbor.chunk)
+                    .await
                 {
-                    if this
-                        .try_heal_with_neighbor_data_node(
-                            pos,
-                            neighbor_pos,
-                            &healthy_neighbor.chunk,
-                        )
-                        .await
-                    {
-                        return true;
-                    }
-                    i += 1;
-                } else {
-                    match this
-                        .load_node(NodeId::new(GridType::Data, neighbor_pos))
-                        .await
-                    {
-                        Ok(chunk) => this
-                            .healthy_graph
-                            .add_data_node(neighbor_pos, chunk.clone()),
-                        Err(_) => {
-                            this.sick_graph.add_data_node(neighbor_pos, Bytes::new());
-                            let pin = Pin::new(&mut *this);
-                            if !pin.heal_data_node(neighbor_pos).await {
-                                i += 1;
-                            }
+                    return true;
+                }
+            } else {
+                match self
+                    .load_node(NodeId::new(GridType::Data, neighbor_pos))
+                    .await
+                {
+                    Ok(chunk) => {
+                        self.healthy_graph
+                            .add_data_node(neighbor_pos, chunk.clone());
+
+                        if self
+                            .try_heal_with_neighbor_data_node(pos, neighbor_pos, &chunk)
+                            .await
+                        {
+                            return true;
                         }
+                    }
+                    Err(_) => {
+                        self.sick_graph.add_data_node(neighbor_pos, Bytes::new());
+                        self.stack.push_back(neighbor_pos);
                     }
                 }
             }
-            false
-        })
+        }
+        false
     }
 
     async fn try_heal_with_neighbor_data_node(
