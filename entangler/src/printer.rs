@@ -1,7 +1,7 @@
 // Copyright 2024 Entanglement Contributors
 // SPDX-License-Identifier: Apache-2.0, MIT
 
-use std::fmt::Write;
+use std::fmt::{self, Write};
 
 use crate::grid::{Dir, Pos};
 use crate::lattice::Graph;
@@ -11,6 +11,13 @@ pub struct Printer<'a> {
     max_x: i64,
     height: i64,
     buffer: String,
+}
+
+impl fmt::Display for Graph {
+    fn fmt(&self, _: &mut fmt::Formatter) -> fmt::Result {
+        Printer::new(self).print();
+        Ok(())
+    }
 }
 
 impl<'a> Printer<'a> {
