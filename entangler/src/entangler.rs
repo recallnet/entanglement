@@ -4,13 +4,12 @@
 use anyhow::Result;
 use bytes::Bytes;
 use futures::StreamExt;
-use iroh::blobs::Hash;
 use std::collections::HashMap;
 use storage::{ByteStream, Error as StorageError, Storage};
 
 use crate::executer;
 use crate::grid::{Grid, Pos};
-use crate::repairer::{self, ChunkInfo, Repairer};
+use crate::repairer::{self, Repairer};
 use crate::Metadata;
 
 const CHUNK_SIZE: usize = 1024;

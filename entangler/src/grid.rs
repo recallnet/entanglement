@@ -166,7 +166,8 @@ impl Pos {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Positioner {
-    height: usize,
+    // TODO: move graph printer to a separate struct that takes this as input
+    pub(crate) height: usize,
     num_items: usize,
     lw_aligned_width: usize,
 }
@@ -209,16 +210,20 @@ impl Positioner {
         match from.dir_to(to) {
             Some(dir) => Some(dir),
             None => {
-                if from.x == 0 {
-                    to.x -= self.lw_aligned_width as i64;
-                } else if to.x == 0 {
-                    to.x += self.lw_aligned_width as i64;
+                if from.x.abs_diff(to.x) > 1 {
+                    if from.x == 0 {
+                        to.x -= self.lw_aligned_width as i64;
+                    } else if to.x == 0 {
+                        to.x += self.lw_aligned_width as i64;
+                    }
                 }
 
-                if from.y == 0 {
-                    to.y -= self.height as i64;
-                } else if from.y == 0 {
-                    to.y += self.height as i64;
+                if from.y.abs_diff(to.y) > 1 {
+                    if from.y == 0 {
+                        to.y -= self.height as i64;
+                    } else if to.y == 0 {
+                        to.y += self.height as i64;
+                    }
                 }
                 from.dir_to(to)
             }
@@ -625,6 +630,45 @@ mod tests {
                 "Expected InvalidNumItems error for {} items and {} columns",
                 num_items,
                 num_columns
+            );
+        }
+    }
+
+    #[test]
+    fn test_positioner_determine_dir() {
+        let p = Positioner::new(4, 32);
+
+        let test_cases = vec![
+            // Standard cases
+            ((0, 0), (1, 0), Some(Dir::R), "Standard right move"),
+            ((1, 1), (0, 1), Some(Dir::L), "Standard left move"),
+            ((1, 1), (2, 0), Some(Dir::UR), "Standard up-right move"),
+            ((1, 1), (0, 2), Some(Dir::DL), "Standard down-left move"),
+            // Horizontal wrapping
+            ((7, 1), (0, 1), Some(Dir::R), "Wrap right horizontally"),
+            ((0, 1), (7, 1), Some(Dir::L), "Wrap left at horizontal edge"),
+            // Vertical wrapping
+            ((1, 3), (2, 0), Some(Dir::DR), "Wrap down-right vertically"),
+            ((2, 0), (1, 3), Some(Dir::UL), "Wrap up-left vertically"),
+            ((1, 3), (0, 0), Some(Dir::DL), "Wrap down-left vertically"),
+            ((0, 0), (1, 3), Some(Dir::UR), "Wrap up-right vertically"),
+            // Corner wrapping
+            ((7, 3), (0, 0), Some(Dir::DR), "Wrap down-right at corner"),
+            ((0, 0), (7, 3), Some(Dir::UL), "Wrap up-left at corner"),
+            ((0, 3), (7, 0), Some(Dir::DL), "Wrap down-left at corner"),
+            ((7, 0), (0, 3), Some(Dir::UR), "Wrap up-right at corner"),
+            // Edge cases
+            ((1, 1), (1, 1), None, "No movement"),
+            ((1, 1), (10, 10), None, "Outside valid range"),
+            ((2, 2), (2, 4), None, "Not neighboring cells"),
+        ];
+
+        for (from, to, expected_dir, message) in test_cases {
+            assert_eq!(
+                p.determine_dir(Pos::new(from.0, from.1), Pos::new(to.0, to.1)),
+                expected_dir,
+                "{}",
+                message
             );
         }
     }

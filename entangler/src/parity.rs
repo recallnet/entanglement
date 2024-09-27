@@ -26,6 +26,16 @@ impl StrandType {
     }
 }
 
+impl Into<&str> for StrandType {
+    fn into(self) -> &'static str {
+        match self {
+            StrandType::Left => "Left",
+            StrandType::Horizontal => "Horizontal",
+            StrandType::Right => "Right",
+        }
+    }
+}
+
 impl From<StrandType> for Dir {
     fn from(strand_type: StrandType) -> Self {
         match strand_type {

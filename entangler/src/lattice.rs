@@ -214,28 +214,23 @@ impl Graph {
         self.get_parity_node_along_dir(pos, dir).is_some()
     }
 
-    pub fn get_neighbor_data_nodes(&self, pos: Pos) -> Vec<&Node> {
-        let directions = Dir::all();
-        let mut neighbors = Vec::with_capacity(directions.len());
-
-        for &dir in &directions {
-            let neighbor_id = NodeId::new_data_id(pos.adjacent(dir));
-            if let Some(node) = self.nodes.get(&neighbor_id) {
-                neighbors.push(node);
-            }
-        }
-
-        neighbors
+    pub fn get_data_neighbor_pos(&self, pos: Pos) -> Vec<Pos> {
+        return self.get_data_neighbors_pos_that(pos, false);
     }
 
     pub fn get_missing_data_neighbors_pos(&self, pos: Pos) -> Vec<Pos> {
+        return self.get_data_neighbors_pos_that(pos, true);
+    }
+
+    fn get_data_neighbors_pos_that(&self, pos: Pos, is_missing: bool) -> Vec<Pos> {
         let directions = Dir::all();
         let mut neighbors = Vec::with_capacity(directions.len());
 
         for &dir in &directions {
-            let neighbor_id = NodeId::new_data_id(pos.adjacent(dir));
-            if !self.nodes.contains_key(&neighbor_id) {
-                neighbors.push(pos.adjacent(dir));
+            let neighbor_pos = self.positioner.normalize(pos.adjacent(dir));
+            let neighbor_id = NodeId::new_data_id(neighbor_pos);
+            if self.nodes.contains_key(&neighbor_id) == !is_missing {
+                neighbors.push(neighbor_pos);
             }
         }
 
@@ -869,13 +864,130 @@ mod tests {
         );
     }
 
+    fn assert_contains_positions(expected: &[(i64, i64)], actual: &[Pos], desc: &str) {
+        let actual: Vec<_> = actual.iter().map(|pos| (pos.x, pos.y)).collect();
+        let mut matching = Vec::with_capacity(expected.len());
+        let mut unexpected = Vec::with_capacity(expected.len());
+        let mut actual_copy = actual.to_vec();
+        let mut missing = expected.to_vec();
+        let mut i = 0;
+        while i < actual_copy.len() {
+            if let Some(act_ind) = missing.iter().position(|&pos| pos == actual_copy[i]) {
+                matching.push(actual_copy.swap_remove(i));
+                missing.swap_remove(act_ind);
+            } else {
+                unexpected.push(actual_copy.swap_remove(i));
+                i += 1;
+            }
+        }
+        let desc = if desc.is_empty() {
+            "".to_string()
+        } else {
+            format!("Description: {}", desc)
+        };
+        assert!(
+            matching.len() == expected.len(),
+            "Expected: {:?}\nActual: {:?}\nMatching: {:?}\nMissing: {:?}\nUnexpected: {:?}\n{}",
+            expected,
+            actual,
+            matching,
+            missing,
+            unexpected,
+            desc,
+        );
+    }
+
     #[test]
-    fn test_comprehensive_4x4_grid() {
+    fn test_get_missing_data_neighbors_pos() {
+        let mut graph = Graph::new(4, 16);
+
+        graph.add_data_node(Pos::new(0, 1), bytes("01"));
+        graph.add_data_node(Pos::new(0, 3), bytes("03"));
+        graph.add_data_node(Pos::new(1, 0), bytes("10"));
+        graph.add_data_node(Pos::new(1, 1), bytes("11"));
+        graph.add_data_node(Pos::new(1, 2), bytes("12"));
+        graph.add_data_node(Pos::new(2, 1), bytes("21"));
+        graph.add_data_node(Pos::new(2, 3), bytes("23"));
+        graph.add_data_node(Pos::new(3, 2), bytes("32"));
+        graph.add_data_node(Pos::new(3, 3), bytes("33"));
+
+        //  . 10  .  .
+        // 01 11 21  .
+        //  . 12  . 32
+        // 03  . 23 33
+
+        let test_cases = vec![
+            (
+                Pos::new(0, 0),
+                vec![(1, 0), (1, 1), (3, 3)],
+                vec![(1, 3), (3, 0), (3, 1)],
+            ),
+            (
+                Pos::new(0, 1),
+                vec![(1, 0), (1, 1), (1, 2), (3, 2)],
+                vec![(3, 0), (3, 1)],
+            ),
+            (
+                Pos::new(0, 2),
+                vec![(3, 2), (3, 3), (1, 1), (1, 2)],
+                vec![(3, 1), (1, 3)],
+            ),
+            (
+                Pos::new(0, 3),
+                vec![(1, 2), (1, 0), (3, 2), (3, 3)],
+                vec![(1, 3), (3, 0)],
+            ),
+            (
+                Pos::new(1, 0),
+                vec![(0, 1), (0, 3), (2, 1), (2, 3)],
+                vec![(0, 0), (2, 0)],
+            ),
+            (
+                Pos::new(1, 1),
+                vec![(0, 1), (2, 1)],
+                vec![(0, 0), (0, 2), (2, 0), (2, 2)],
+            ),
+            (
+                Pos::new(3, 0),
+                vec![(2, 1), (2, 3), (0, 1), (0, 3)],
+                vec![(2, 0), (0, 0)],
+            ),
+            (
+                Pos::new(3, 1),
+                vec![(2, 1), (0, 1)],
+                vec![(2, 0), (2, 2), (0, 0), (0, 2)],
+            ),
+            (
+                Pos::new(3, 2),
+                vec![(2, 1), (2, 3), (0, 1), (0, 3)],
+                vec![(2, 2), (0, 2)],
+            ),
+            (
+                Pos::new(3, 3),
+                vec![(2, 3), (0, 3)],
+                vec![(2, 2), (2, 0), (0, 2), (0, 0)],
+            ),
+        ];
+
+        for (i, (test_pos, expected_neighbors, expected_missing)) in
+            test_cases.into_iter().enumerate()
+        {
+            let desc = format!("Test case {}: data neighbors of {:?}", i, test_pos);
+            let data_neighbors = graph.get_data_neighbor_pos(test_pos);
+            assert_contains_positions(&expected_neighbors, &data_neighbors, &desc);
+
+            let desc = format!("Test case {}: missing data neighbors of {:?}", i, test_pos);
+            let missing_data_neighbors = graph.get_missing_data_neighbors_pos(test_pos);
+            assert_contains_positions(&expected_missing, &missing_data_neighbors, &desc);
+        }
+    }
+
+    #[test]
+    fn test_print_graph() {
         let mut graph = Graph::new(4, 16);
 
         let b = || -> Bytes { Bytes::new() };
 
-        // Add data nodes (some missing)
         graph.add_data_node(Pos::new(0, 0), b());
         graph.add_data_node(Pos::new(1, 1), b());
         graph.add_data_node(Pos::new(2, 2), b());
@@ -883,7 +995,6 @@ mod tests {
         graph.add_data_node(Pos::new(0, 3), b());
         graph.add_data_node(Pos::new(3, 0), b());
 
-        // Add parity nodes (including wrapping and X parities)
         graph.add_parity_node(Pos::new(0, 0), b(), StrandType::Right);
         graph.add_parity_node(Pos::new(0, 0), b(), StrandType::Left);
         graph.add_parity_node(Pos::new(3, 0), b(), StrandType::Right);

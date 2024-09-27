@@ -202,6 +202,27 @@ fn make_parity_unavailable(st: &FakeStorage, metadata: &Metadata, strand: Strand
 
 #[tokio::test]
 async fn test_entangler_repair_scenarios() -> Result<()> {
+    //  0  5  .  5 20 25
+    //  1  .  .  . 21 26
+    //  .  .  .  .  . 27
+    //  3  .  .  . 23 28
+    //  4  9  . 19 24 29
+    fn get_chunk_island() -> Vec<usize> {
+        vec![2, 6, 7, 8, 10, 11, 12, 13, 14, 16, 17, 18, 22]
+    }
+
+    //  0  5  . 15 20 25  .  .  .  .
+    //  1  .  .  . 21 26  .  .  . 46
+    //  .  .  .  .  . 27  .  . 42 47
+    //  3  .  .  . 23 28 33 38 43  .
+    //  4  9  . 19 24 29 34 39 44  .
+    fn get_several_chunk_islands() -> Vec<usize> {
+        vec![
+            2, 6, 7, 8, 10, 11, 12, 13, 14, 16, 17, 18, 22, 30, 31, 32, 35, 36, 37, 40, 41, 45, 48,
+            49,
+        ]
+    }
+
     struct TestCase {
         name: &'static str,
         setup: fn(&FakeStorage, &Metadata),
@@ -260,54 +281,147 @@ async fn test_entangler_repair_scenarios() -> Result<()> {
             },
             should_succeed: false,
         },
-        /*TestCase {
-            name: "an island of missing chunks",
+        TestCase {
+            name: "an island of missing chunks (only left parity available)",
             setup: |st, metadata| {
-                //  0  5  .  5 20 25
-                //  1  .  .  . 21 26
-                //  .  .  .  .  . 27
-                //  3  .  .  . 23 28
-                //  4  9  . 19 24 29
-                st.fake_failed_chunks(
-                    &metadata.orig_hash,
-                    vec![2, 6, 7, 8, 10, 11, 12, 13, 14, 16, 17, 18, 22],
-                );
+                st.fake_failed_chunks(&metadata.orig_hash, get_chunk_island());
 
-                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Left]);
-                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Horizontal]);
+                make_parity_unavailable(st, metadata, StrandType::Horizontal);
+                make_parity_unavailable(st, metadata, StrandType::Right);
             },
             should_succeed: true,
         },
         TestCase {
-            name: "several islands of missing chunks",
+            name: "an island of missing chunks (only horizontal parity available)",
             setup: |st, metadata| {
-                //  0  5  . 15 20 25  .  .  .  .
-                //  1  .  .  . 21 26  .  .  . 46
-                //  .  .  .  .  . 27  .  . 42 47
-                //  3  .  .  . 23 28 33 38 43  .
-                //  4  9  . 19 24 29 34 39 44  .
-                st.fake_failed_chunks(
-                    &metadata.orig_hash,
-                    vec![
-                        2, 6, 7, 8, 10, 11, 12, 13, 14, 16, 17, 18, 22, 30, 31, 32, 35, 36, 37, 40,
-                        41, 45, 48, 49,
-                    ],
-                );
+                st.fake_failed_chunks(&metadata.orig_hash, get_chunk_island());
 
-                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Horizontal]);
-                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Right]);
+                make_parity_unavailable(st, metadata, StrandType::Left);
+                make_parity_unavailable(st, metadata, StrandType::Right);
             },
             should_succeed: true,
         },
         TestCase {
-            name: "only 1 chunk is available",
+            name: "an island of missing chunks (only right parity available)",
+            setup: |st, metadata| {
+                st.fake_failed_chunks(&metadata.orig_hash, get_chunk_island());
+
+                make_parity_unavailable(st, metadata, StrandType::Left);
+                make_parity_unavailable(st, metadata, StrandType::Horizontal);
+            },
+            should_succeed: true,
+        },
+        TestCase {
+            name: "several islands of missing chunks (only left parity available)",
+            setup: |st, metadata| {
+                st.fake_failed_chunks(&metadata.orig_hash, get_several_chunk_islands());
+
+                make_parity_unavailable(st, metadata, StrandType::Horizontal);
+                make_parity_unavailable(st, metadata, StrandType::Right);
+            },
+            should_succeed: true,
+        },
+        TestCase {
+            name: "several islands of missing chunks (only horizontal parity available)",
+            setup: |st, metadata| {
+                st.fake_failed_chunks(&metadata.orig_hash, get_several_chunk_islands());
+
+                make_parity_unavailable(st, metadata, StrandType::Left);
+                make_parity_unavailable(st, metadata, StrandType::Right);
+            },
+            should_succeed: true,
+        },
+        TestCase {
+            name: "several islands of missing chunks (only right parity available)",
+            setup: |st, metadata| {
+                st.fake_failed_chunks(&metadata.orig_hash, get_several_chunk_islands());
+
+                make_parity_unavailable(st, metadata, StrandType::Left);
+                make_parity_unavailable(st, metadata, StrandType::Horizontal);
+            },
+            should_succeed: true,
+        },
+        TestCase {
+            name: "only 1 chunk at (2, 2) is available and left parity is unavailable",
             setup: |st, metadata| {
                 st.fake_failed_chunks(&metadata.orig_hash, (0..12).chain(13..CHUNK_SIZE).collect());
 
                 st.fake_failed_download(&metadata.parity_hashes[&StrandType::Left]);
             },
             should_succeed: true,
-        },*/
+        },
+        TestCase {
+            name: "only 1 chunk at (3, 2) is available and left parity is unavailable",
+            setup: |st, metadata| {
+                st.fake_failed_chunks(&metadata.orig_hash, (0..17).chain(18..CHUNK_SIZE).collect());
+
+                make_parity_unavailable(st, metadata, StrandType::Left);
+            },
+            should_succeed: true,
+        },
+        TestCase {
+            name: "only 1 chunk at (4, 1) is available and left parity is unavailable",
+            setup: |st, metadata| {
+                st.fake_failed_chunks(&metadata.orig_hash, (0..21).chain(22..CHUNK_SIZE).collect());
+
+                make_parity_unavailable(st, metadata, StrandType::Left);
+            },
+            should_succeed: true,
+        },
+        TestCase {
+            name: "only 1 chunk at (2, 2) is available and right parity is unavailable",
+            setup: |st, metadata| {
+                st.fake_failed_chunks(&metadata.orig_hash, (0..12).chain(13..CHUNK_SIZE).collect());
+
+                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Right]);
+            },
+            should_succeed: true,
+        },
+        TestCase {
+            name: "only 1 chunk at (3, 2) is available and right parity is unavailable",
+            setup: |st, metadata| {
+                st.fake_failed_chunks(&metadata.orig_hash, (0..17).chain(18..CHUNK_SIZE).collect());
+
+                make_parity_unavailable(st, metadata, StrandType::Right);
+            },
+            should_succeed: true,
+        },
+        TestCase {
+            name: "only 1 chunk at (4, 1) is available and right parity is unavailable",
+            setup: |st, metadata| {
+                st.fake_failed_chunks(&metadata.orig_hash, (0..21).chain(22..CHUNK_SIZE).collect());
+
+                make_parity_unavailable(st, metadata, StrandType::Right);
+            },
+            should_succeed: true,
+        },
+        TestCase {
+            name: "only 1 chunk at (2, 2) is available and horizontal parity is unavailable",
+            setup: |st, metadata| {
+                st.fake_failed_chunks(&metadata.orig_hash, (0..12).chain(13..CHUNK_SIZE).collect());
+
+                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Horizontal]);
+            },
+            should_succeed: true,
+        },
+        TestCase {
+            name: "only 1 chunk at (3, 2) is available and horizontal parity is unavailable",
+            setup: |st, metadata| {
+                st.fake_failed_chunks(&metadata.orig_hash, (0..17).chain(18..CHUNK_SIZE).collect());
+
+                make_parity_unavailable(st, metadata, StrandType::Horizontal);
+            },
+            should_succeed: true,
+        },
+        TestCase {
+            name: "only 1 chunk at (4, 1) is available and horizontal parity is unavailable",
+            setup: |st, metadata| {
+                st.fake_failed_chunks(&metadata.orig_hash, (0..21).chain(22..CHUNK_SIZE).collect());
+
+                make_parity_unavailable(st, metadata, StrandType::Horizontal);
+            },
+            should_succeed: true,
+        },
     ];
 
     for case in test_cases {

@@ -2,20 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0, MIT
 
 use crate::grid::{Dir, Grid, Pos, Positioner};
-use crate::lattice::{DataNode, Graph, GridType, NodeId, ParityNode};
-use crate::parity::{ParityGrid, StrandType};
+use crate::lattice::{Graph, GridType, NodeId};
+use crate::parity::StrandType;
 use anyhow::Result;
-use chunker::tree::Node;
 use storage::{Error as StorageError, Storage};
 
 use crate::Metadata;
 use bytes::Bytes;
-use std::boxed::Box;
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::future::Future;
-use std::marker::PhantomPinned;
+use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
-use std::task::{Context, Poll};
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -66,10 +61,7 @@ impl<'a, 'b, T: Storage> Repairer<'a, 'b, T> {
         let healer = Healer::new(
             self.storage.clone(),
             self.metadata.clone(),
-            chunks
-                .into_iter()
-                .map(|c| ChunkInfo::new(c.clone(), self.id_to_pos_map[&c]))
-                .collect(),
+            chunks.into_iter().map(|c| self.id_to_pos_map[&c]).collect(),
             self.grid.get_height(),
             self.grid.get_num_items(),
             self.pos_to_id_map.to_owned(),
@@ -86,18 +78,6 @@ impl<'a, 'b, T: Storage> Repairer<'a, 'b, T> {
     }
 }
 
-#[derive(Clone)]
-pub struct ChunkInfo<T: Clone> {
-    chunk_id: T,
-    pos: Pos,
-}
-
-impl<T: Clone> ChunkInfo<T> {
-    pub fn new(chunk_id: T, pos: Pos) -> Self {
-        Self { chunk_id, pos }
-    }
-}
-
 struct Healer<T: Storage> {
     storage: T,
     sick_graph: Graph,
@@ -107,14 +87,15 @@ struct Healer<T: Storage> {
     positioner: Positioner,
     metadata: Metadata,
     pos_to_id_map: HashMap<Pos, T::ChunkId>,
-    stack: VecDeque<Pos>,
+    stack: Vec<(Pos, Vec<Dir>)>,
+    result: HashMap<Pos, Bytes>,
 }
 
 impl<T: Storage> Healer<T> {
     fn new(
         storage: T,
         metadata: Metadata,
-        sick_chunks: Vec<ChunkInfo<T::ChunkId>>,
+        sick_nodes: Vec<Pos>,
         grid_height: usize,
         num_grid_items: usize,
         pos_to_id_map: HashMap<Pos, T::ChunkId>,
@@ -122,11 +103,8 @@ impl<T: Storage> Healer<T> {
         let mut sick_graph = Graph::new(grid_height, num_grid_items);
         let healthy_graph = Graph::new(grid_height, num_grid_items);
 
-        let mut sick_nodes = Vec::with_capacity(sick_chunks.len());
-
-        for chunk in sick_chunks {
-            sick_graph.add_data_node(chunk.pos, Bytes::new());
-            sick_nodes.push(chunk.pos);
+        for &chunk in &sick_nodes {
+            sick_graph.add_data_node(chunk, Bytes::new());
         }
 
         Self {
@@ -138,48 +116,55 @@ impl<T: Storage> Healer<T> {
             positioner: Positioner::new(grid_height, num_grid_items),
             metadata,
             pos_to_id_map,
-            stack: VecDeque::new(),
+            stack: Vec::new(),
+            result: HashMap::new(),
         }
     }
 
     async fn heal(self: Pin<&mut Self>) -> Result<HashMap<Pos, Bytes>, Error> {
         let this = self.get_mut();
-        let mut res = HashMap::new();
 
-        for pos in this.sick_nodes.to_owned() {
-            if !this.visited.contains(&pos) {
-                this.stack.push_back(pos);
-                while let Some(current_pos) = this.stack.pop_back() {
-                    if this.visited.contains(&current_pos) {
-                        continue;
-                    }
-                    this.visited.insert(current_pos);
+        let mut num_sick_nodes = this.sick_nodes.len();
+        while num_sick_nodes > 0 {
+            this.execute_healing().await;
+            if num_sick_nodes == this.sick_nodes.len() {
+                return Err(Error::FailedToRepairChunks);
+            }
+            num_sick_nodes = this.sick_nodes.len();
+        }
 
-                    if this.heal_data_node(current_pos).await {
-                        res.insert(
-                            current_pos,
-                            this.healthy_graph
-                                .get_data_node(current_pos)
-                                .unwrap()
-                                .chunk
-                                .clone(),
-                        );
-                    }
+        Ok(this.result.clone())
+    }
+
+    async fn execute_healing(&mut self) {
+        self.visited.clear();
+        self.stack.clear();
+
+        for pos in self.sick_nodes.to_owned() {
+            if self.visited.contains(&pos) {
+                continue;
+            }
+
+            self.visited.insert(pos);
+            self.stack.push((pos, Dir::all().to_vec()));
+            while let Some((pos, dirs)) = self.stack.pop() {
+                if self.heal_data_node(pos, dirs).await {
+                    self.result.insert(
+                        pos,
+                        self.healthy_graph.get_data_node(pos).unwrap().chunk.clone(),
+                    );
                 }
             }
         }
 
-        this.sick_nodes.retain(|&pos| !res.contains_key(&pos));
-        if !this.sick_nodes.is_empty() {
-            return Err(Error::FailedToRepairChunks);
-        }
-        Ok(res)
+        self.sick_nodes
+            .retain(|&pos| !self.result.contains_key(&pos));
     }
 
-    async fn heal_data_node(&mut self, pos: Pos) -> bool {
-        let missing_neighbors = self.sick_graph.get_missing_neighbors_data_nodes(pos);
-        for neighbor_pos in missing_neighbors {
-            let neighbor_pos = self.positioner.normalize(neighbor_pos);
+    async fn heal_data_node(&mut self, pos: Pos, dirs: Vec<Dir>) -> bool {
+        for i in 0..dirs.len() {
+            //let neighbor_pos = self.positioner.normalize(neighbor_pos);
+            let neighbor_pos = self.positioner.normalize(pos.adjacent(dirs[i]));
             if let Some(healthy_neighbor) = self.healthy_graph.get_data_node(neighbor_pos).cloned()
             {
                 if self
@@ -187,6 +172,13 @@ impl<T: Storage> Healer<T> {
                     .await
                 {
                     return true;
+                }
+            } else if let Some(_) = self.sick_graph.get_data_node(neighbor_pos) {
+                if !self.visited.contains(&neighbor_pos) {
+                    self.visited.insert(neighbor_pos);
+                    self.stack.push((pos, dirs[i..].to_vec()));
+                    self.stack.push((neighbor_pos, Dir::all().to_vec()));
+                    return false;
                 }
             } else {
                 match self
@@ -206,7 +198,12 @@ impl<T: Storage> Healer<T> {
                     }
                     Err(_) => {
                         self.sick_graph.add_data_node(neighbor_pos, Bytes::new());
-                        self.stack.push_back(neighbor_pos);
+                        if !self.visited.contains(&neighbor_pos) {
+                            self.visited.insert(neighbor_pos);
+                            self.stack.push((pos, dirs[i..].to_vec()));
+                            self.stack.push((neighbor_pos, Dir::all().to_vec()));
+                            return false;
+                        }
                     }
                 }
             }
@@ -248,8 +245,13 @@ impl<T: Storage> Healer<T> {
                     return true;
                 }
                 Err(_) => {
-                    self.sick_graph
-                        .add_parity_node(parity_pos, Bytes::new(), parity_strand);
+                    if !self
+                        .sick_graph
+                        .has_parity_node_along_dir(neighbor_pos, parity_strand.into())
+                    {
+                        self.sick_graph
+                            .add_parity_node(parity_pos, Bytes::new(), parity_strand);
+                    }
                 }
             }
         }
