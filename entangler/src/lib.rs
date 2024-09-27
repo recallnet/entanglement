@@ -11,3 +11,6 @@ mod executer;
 mod grid;
 mod lattice;
 mod repairer;
+
+#[cfg(test)]
+mod printer;

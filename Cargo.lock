@@ -268,17 +268,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bao"
-version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3663af8a469bf3a2d818b8c1a7b62e4dc55c4547b4c14f5dab35fc9e707bef83"
-dependencies = [
- "arrayref",
- "arrayvec",
- "blake3",
-]
-
-[[package]]
 name = "bao-tree"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -471,16 +460,6 @@ dependencies = [
  "serde",
  "wasm-bindgen",
  "windows-targets 0.52.6",
-]
-
-[[package]]
-name = "chunker"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bao",
- "blake3",
- "bytes",
 ]
 
 [[package]]
@@ -1044,7 +1023,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bytes",
- "chunker",
  "cid",
  "futures",
  "iroh",
