@@ -346,7 +346,7 @@ async fn test_entangler_repair_scenarios() -> Result<()> {
             setup: |st, metadata| {
                 st.fake_failed_chunks(&metadata.orig_hash, (0..12).chain(13..CHUNK_SIZE).collect());
 
-                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Left]);
+                make_parity_unavailable(st, metadata, StrandType::Left);
             },
             should_succeed: true,
         },
@@ -373,7 +373,7 @@ async fn test_entangler_repair_scenarios() -> Result<()> {
             setup: |st, metadata| {
                 st.fake_failed_chunks(&metadata.orig_hash, (0..12).chain(13..CHUNK_SIZE).collect());
 
-                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Right]);
+                make_parity_unavailable(st, metadata, StrandType::Right);
             },
             should_succeed: true,
         },
@@ -400,7 +400,7 @@ async fn test_entangler_repair_scenarios() -> Result<()> {
             setup: |st, metadata| {
                 st.fake_failed_chunks(&metadata.orig_hash, (0..12).chain(13..CHUNK_SIZE).collect());
 
-                st.fake_failed_download(&metadata.parity_hashes[&StrandType::Horizontal]);
+                make_parity_unavailable(st, metadata, StrandType::Horizontal);
             },
             should_succeed: true,
         },
