@@ -10,7 +10,6 @@ use storage::{Error as StorageError, Storage};
 use crate::Metadata;
 use bytes::Bytes;
 use std::collections::{HashMap, HashSet};
-use std::pin::Pin;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -58,7 +57,7 @@ impl<'a, 'b, T: Storage> Repairer<'a, 'b, T> {
     }
 
     pub async fn repair_chunks(&mut self, chunks: Vec<T::ChunkId>) -> Result<(), Error> {
-        let healer = Healer::new(
+        let mut healer = Healer::new(
             self.storage.clone(),
             self.metadata.clone(),
             chunks.into_iter().map(|c| self.id_to_pos_map[&c]).collect(),
@@ -67,7 +66,6 @@ impl<'a, 'b, T: Storage> Repairer<'a, 'b, T> {
             self.pos_to_id_map.to_owned(),
         );
 
-        tokio::pin!(healer);
         let healthy_chunks = healer.heal().await?;
 
         for (pos, chunk) in healthy_chunks {
@@ -121,19 +119,17 @@ impl<T: Storage> Healer<T> {
         }
     }
 
-    async fn heal(self: Pin<&mut Self>) -> Result<HashMap<Pos, Bytes>, Error> {
-        let this = self.get_mut();
-
-        let mut num_sick_nodes = this.sick_nodes.len();
+    async fn heal(&mut self) -> Result<HashMap<Pos, Bytes>, Error> {
+        let mut num_sick_nodes = self.sick_nodes.len();
         while num_sick_nodes > 0 {
-            this.execute_healing().await;
-            if num_sick_nodes == this.sick_nodes.len() {
+            self.execute_healing().await;
+            if num_sick_nodes == self.sick_nodes.len() {
                 return Err(Error::FailedToRepairChunks);
             }
-            num_sick_nodes = this.sick_nodes.len();
+            num_sick_nodes = self.sick_nodes.len();
         }
 
-        Ok(this.result.clone())
+        Ok(self.result.clone())
     }
 
     async fn execute_healing(&mut self) {
@@ -163,7 +159,6 @@ impl<T: Storage> Healer<T> {
 
     async fn heal_data_node(&mut self, pos: Pos, dirs: Vec<Dir>) -> bool {
         for i in 0..dirs.len() {
-            //let neighbor_pos = self.positioner.normalize(neighbor_pos);
             let neighbor_pos = self.positioner.normalize(pos.adjacent(dirs[i]));
             if let Some(healthy_neighbor) = self.healthy_graph.get_data_node(neighbor_pos).cloned()
             {
