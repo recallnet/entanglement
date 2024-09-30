@@ -15,6 +15,9 @@ use crate::storage::{ByteStream, Error as StorageError, Storage};
 
 const CHUNK_SIZE: usize = 1024;
 
+/// `FakeStorage` is an in-memory implementation of the `Storage` trait for testing purposes.
+/// It allows simulating various storage scenarios, including successful uploads/downloads,
+/// chunk failures, and blob failures.
 #[derive(Clone)]
 pub struct FakeStorage {
     data: Arc<Mutex<HashMap<String, Vec<Bytes>>>>,
@@ -31,6 +34,7 @@ impl FakeStorage {
         }
     }
 
+    /// Simulate a failure for a specific chunk of a blob.
     pub fn fake_failed_chunks(&self, hash: &str, chunks: Vec<usize>) {
         self.fail_chunks
             .lock()
@@ -38,6 +42,7 @@ impl FakeStorage {
             .insert(hash.to_string(), chunks);
     }
 
+    /// Simulate a failure for a specific blob.
     pub fn fake_failed_download(&self, hash: &str) {
         self.fail_blobs
             .lock()

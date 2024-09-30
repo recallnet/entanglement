@@ -14,10 +14,14 @@ use crate::storage::{ByteStream, Error as StorageError, Storage};
 
 const CHUNK_SIZE: usize = 1024;
 
+/// `ClientProvider` is a trait for types that can provide an Iroh client.
 trait ClientProvider: Send + Sync {
     fn client(&self) -> &Client;
 }
 
+/// `IrohStorage` is a storage backend that interacts with the Iroh client to store and retrieve data.
+/// It supports various initialization methods, including in-memory and persistent storage, and can
+/// upload and download data in chunks.
 pub struct IrohStorage {
     client_provider: Arc<dyn ClientProvider>,
 }
@@ -30,6 +34,7 @@ impl Clone for IrohStorage {
     }
 }
 
+/// `ClientHolder` is a wrapper around an Iroh client that implements `ClientProvider`.
 #[derive(Clone)]
 struct ClientHolder {
     client: Client,
@@ -41,6 +46,7 @@ impl ClientProvider for ClientHolder {
     }
 }
 
+/// `NodeHolder` is a wrapper around an Iroh node that implements `ClientProvider`.
 struct NodeHolder<S> {
     node: iroh::node::Node<S>,
 }
