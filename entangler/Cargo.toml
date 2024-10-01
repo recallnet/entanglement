@@ -22,9 +22,17 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 
-storage = { path = "../storage" }
+[dependencies.storage]
+path = "../storage"
+features = []
+
+[dev-dependencies.storage]
+path = "../storage"
+features = ["mock"]
+
+[lib]
+doctest = false
 
 [[test]]
 name = "entangler_integration_tests"
 path = "tests/entangler_test.rs"
-required-features = ["storage/mock"]
