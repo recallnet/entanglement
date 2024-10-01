@@ -14,36 +14,6 @@ use crate::Metadata;
 
 const CHUNK_SIZE: usize = 1024;
 
-fn bytes_to_chunks(bytes: Bytes, chunk_size: usize) -> Vec<Bytes> {
-    let mut chunks = Vec::with_capacity((bytes.len() + chunk_size - 1) / chunk_size);
-    let mut start = 0;
-
-    while start < bytes.len() {
-        let end = std::cmp::min(start + chunk_size, bytes.len());
-        chunks.push(bytes.slice(start..end));
-        start = end;
-    }
-
-    // if last chunk is smaller than chunk_size, add padding
-    if let Some(last_chunk) = chunks.last_mut() {
-        *last_chunk = add_padding(last_chunk, chunk_size);
-    }
-
-    chunks
-}
-
-fn add_padding(chunk: &Bytes, chunk_size: usize) -> Bytes {
-    let mut chunk = chunk.to_vec();
-    chunk.resize(chunk_size, 0);
-    Bytes::from(chunk)
-}
-
-pub struct Entangler<T: Storage> {
-    storage: T,
-    alpha: u8,
-    s: u8,
-}
-
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("Invalid parameter {0}: {1}")]
@@ -72,6 +42,15 @@ pub enum Error {
     Repair(#[from] repairer::Error),
 }
 
+/// The `Entangler` struct is responsible for managing the entanglement process of data chunks.
+/// It interacts with a storage backend to upload and download data, and ensures data integrity
+/// through the use of parity chunks.
+pub struct Entangler<T: Storage> {
+    storage: T,
+    alpha: u8,
+    s: u8,
+}
+
 impl<T: Storage> Entangler<T> {
     pub fn new(storage: T, alpha: u8, s: u8, p: u8) -> Result<Self, Error> {
         if alpha == 0 || s == 0 {
@@ -89,6 +68,9 @@ impl<T: Storage> Entangler<T> {
         Ok(Self { storage, alpha, s })
     }
 
+    /// Creates entangled parity blobs for the given data and uploads them to the storage backend.
+    /// The original data is also uploaded to the storage backend.
+    /// Returns the hash of the original data and the hash of the metadata.
     pub async fn upload(&self, bytes: impl Into<Bytes> + Send) -> Result<(String, String)> {
         let bytes: Bytes = bytes.into();
         let chunks = bytes_to_chunks(bytes.clone(), CHUNK_SIZE);
@@ -124,6 +106,9 @@ impl<T: Storage> Entangler<T> {
         Ok((orig_hash, metadata_hash))
     }
 
+    /// Downloads the data identified by the given hash. If the data is corrupted, it attempts to
+    /// repair the data using the parity blobs identified by the metadata hash.
+    /// Returns the downloaded data.
     pub async fn download(&self, hash: &str, metadata_hash: Option<&str>) -> Result<Bytes, Error> {
         match (self.storage.download_bytes(hash).await, metadata_hash) {
             (Ok(data), _) => Ok(data),
@@ -140,6 +125,9 @@ impl<T: Storage> Entangler<T> {
         Ok(serde_json::from_slice(&metadata_bytes)?)
     }
 
+    /// Downloads the data identified by the given hash and attempts to repair it using the parity
+    /// blobs identified by the metadata hash. Returns the repaired data.
+    /// It downloads the original blob chunk-by-chunk and tries to repair the missing chunks.
     async fn download_repaired(&self, hash: &str, metadata_hash: &str) -> Result<Bytes, Error> {
         let metadata = self.download_metadata(metadata_hash).await?;
 
@@ -156,6 +144,8 @@ impl<T: Storage> Entangler<T> {
         }
     }
 
+    /// Analyzes the chunks in the stream and returns the available chunks, missing indexes, and
+    /// a map of chunk ids to positions.
     async fn analyze_chunks(
         &self,
         mut stream: ByteStream<T::ChunkId>,
@@ -189,6 +179,7 @@ impl<T: Storage> Entangler<T> {
         Ok((available_chunks, missing_indexes, chunk_id_map))
     }
 
+    /// Creates a grid from the available chunks and attempts to repair the missing chunks.
     async fn repair_chunks(
         &self,
         metadata: Metadata,
@@ -219,6 +210,30 @@ impl<T: Storage> Entangler<T> {
 
         Ok(grid.assemble_data())
     }
+}
+
+fn bytes_to_chunks(bytes: Bytes, chunk_size: usize) -> Vec<Bytes> {
+    let mut chunks = Vec::with_capacity((bytes.len() + chunk_size - 1) / chunk_size);
+    let mut start = 0;
+
+    while start < bytes.len() {
+        let end = std::cmp::min(start + chunk_size, bytes.len());
+        chunks.push(bytes.slice(start..end));
+        start = end;
+    }
+
+    // if last chunk is smaller than chunk_size, add padding
+    if let Some(last_chunk) = chunks.last_mut() {
+        *last_chunk = add_padding(last_chunk, chunk_size);
+    }
+
+    chunks
+}
+
+fn add_padding(chunk: &Bytes, chunk_size: usize) -> Bytes {
+    let mut chunk = chunk.to_vec();
+    chunk.resize(chunk_size, 0);
+    Bytes::from(chunk)
 }
 
 #[cfg(test)]

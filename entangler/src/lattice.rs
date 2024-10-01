@@ -7,62 +7,71 @@ use crate::grid::{Dir, Pos, Positioner};
 use crate::parity::StrandType;
 use bytes::Bytes;
 
+/// Unique identifier for a node in the graph.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct NodeId {
-    pub grid_type: GridType,
+    pub node_type: NodeType,
     pub pos: Pos,
 }
 
 impl NodeId {
-    pub fn new(grid_type: GridType, pos: Pos) -> Self {
-        Self { grid_type, pos }
+    /// Creates a new `NodeId` for a node at the given position.
+    pub fn new(grid_type: NodeType, pos: Pos) -> Self {
+        Self {
+            node_type: grid_type,
+            pos,
+        }
     }
 
+    /// Creates a new `NodeId` for a data node at the given position.
     pub fn new_data_id(pos: Pos) -> Self {
-        Self::new(GridType::Data, pos)
+        Self::new(NodeType::Data, pos)
     }
 }
 
+/// Type of a node in the graph.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub enum GridType {
+pub enum NodeType {
     Data,
     ParityLeft,
     ParityHorizontal,
     ParityRight,
 }
 
-impl From<Dir> for GridType {
+impl From<Dir> for NodeType {
     fn from(dir: Dir) -> Self {
         match dir {
-            Dir::DL | Dir::UR => GridType::ParityLeft,
-            Dir::L | Dir::R => GridType::ParityHorizontal,
-            Dir::UL | Dir::DR => GridType::ParityRight,
+            Dir::DL | Dir::UR => NodeType::ParityLeft,
+            Dir::L | Dir::R => NodeType::ParityHorizontal,
+            Dir::UL | Dir::DR => NodeType::ParityRight,
         }
     }
 }
 
-impl From<StrandType> for GridType {
+impl From<StrandType> for NodeType {
     fn from(st: StrandType) -> Self {
         match st {
-            StrandType::Left => GridType::ParityLeft,
-            StrandType::Horizontal => GridType::ParityHorizontal,
-            StrandType::Right => GridType::ParityRight,
+            StrandType::Left => NodeType::ParityLeft,
+            StrandType::Horizontal => NodeType::ParityHorizontal,
+            StrandType::Right => NodeType::ParityRight,
         }
     }
 }
 
-impl TryInto<StrandType> for GridType {
+impl TryInto<StrandType> for NodeType {
     type Error = anyhow::Error;
     fn try_into(self) -> Result<StrandType, Self::Error> {
         match self {
-            GridType::ParityLeft => Ok(StrandType::Left),
-            GridType::ParityHorizontal => Ok(StrandType::Horizontal),
-            GridType::ParityRight => Ok(StrandType::Right),
+            NodeType::ParityLeft => Ok(StrandType::Left),
+            NodeType::ParityHorizontal => Ok(StrandType::Horizontal),
+            NodeType::ParityRight => Ok(StrandType::Right),
             _ => Err(anyhow::anyhow!("Invalid grid type")),
         }
     }
 }
 
+/// A data node in the graph.
+/// It can have multiple parities connected to it from different directions.
 #[derive(Debug, Clone)]
 pub struct DataNode {
     pub chunk: Bytes,
@@ -78,6 +87,10 @@ impl DataNode {
     }
 }
 
+/// A parity node in the graph.
+/// It can be connected to two data nodes, one in the current position and one in the next position.
+/// A pair of connected data nodes refer to the same parity node that connects them, but in
+/// opposite directions.
 #[derive(Debug, Clone)]
 pub struct ParityNode {
     pub chunk: Bytes,
@@ -95,12 +108,18 @@ impl ParityNode {
     }
 }
 
+/// A node in the graph.
 #[derive(Debug, Clone)]
 pub enum Node {
+    /// A data node in the graph.
     Data(DataNode),
+    /// A parity node in the graph.
     Parity(ParityNode),
 }
 
+/// A graph representing the data and parity nodes in the grid.
+/// A node can be either a data node or a parity node. Every data node connects to another
+/// data node through a parity node.
 #[derive(Debug)]
 pub struct Graph {
     pub(super) nodes: HashMap<NodeId, Node>,
@@ -116,6 +135,8 @@ impl Graph {
         }
     }
 
+    /// Adds a data node to the graph at the given position.
+    /// It checks if there are any parities in the neighboring positions and connects them.
     pub fn add_data_node(&mut self, pos: Pos, chunk: Bytes) {
         let data_id = NodeId::new_data_id(self.positioner.normalize(pos));
 
@@ -137,6 +158,8 @@ impl Graph {
         self.nodes.insert(data_id, Node::Data(data_node));
     }
 
+    /// Removes a data node from the graph at the given position.
+    /// It also removes the connections to the parities in the neighboring positions.
     pub fn remove_data_node(&mut self, pos: Pos) {
         let data_id = NodeId::new_data_id(self.positioner.normalize(pos));
         if let Some(Node::Data(data_node)) = self.nodes.remove(&data_id) {
@@ -152,6 +175,8 @@ impl Graph {
         }
     }
 
+    /// Adds a parity node to the graph at the given position.
+    /// It checks if there are any data nodes on the both neighboring positions and connects them.
     pub fn add_parity_node(&mut self, pos: Pos, chunk: Bytes, strand_type: StrandType) {
         let pos = self.positioner.normalize(pos);
         let parity_id = NodeId::new(strand_type.into(), pos);
@@ -175,14 +200,17 @@ impl Graph {
         self.nodes.insert(parity_id, Node::Parity(parity_node));
     }
 
+    /// Returns the node at the given position if it exists.
     pub fn get_node(&self, id: &NodeId) -> Option<&Node> {
         self.nodes.get(id)
     }
 
+    /// Indicates whether a data node exists at the given position.
     pub fn has_data_node(&self, pos: Pos) -> bool {
         self.nodes.contains_key(&NodeId::new_data_id(pos))
     }
 
+    /// Returns the data node at the given position if it exists.
     pub fn get_data_node(&self, pos: Pos) -> Option<&DataNode> {
         if let Some(Node::Data(node)) = self.nodes.get(&NodeId::new_data_id(pos)) {
             Some(node)
@@ -191,6 +219,7 @@ impl Graph {
         }
     }
 
+    /// Returns the parity node at the given position if it exists.
     pub fn get_parity_node(&self, pos: Pos, strand_type: StrandType) -> Option<&ParityNode> {
         if let Some(Node::Parity(node)) = self.nodes.get(&NodeId::new(strand_type.into(), pos)) {
             Some(node)
@@ -199,6 +228,7 @@ impl Graph {
         }
     }
 
+    /// Returns the parity node at the given position if it exists in the given direction.
     pub fn get_parity_node_along_dir(&self, pos: Pos, dir: Dir) -> Option<&ParityNode> {
         let pos = self
             .positioner
@@ -210,14 +240,17 @@ impl Graph {
         }
     }
 
+    /// Indicates whether a parity node exists at the given position in the given direction.
     pub fn has_parity_node_along_dir(&self, pos: Pos, dir: Dir) -> bool {
         self.get_parity_node_along_dir(pos, dir).is_some()
     }
 
+    /// Returns all data nodes that are neighbors of the given position.
     pub fn get_data_neighbor_pos(&self, pos: Pos) -> Vec<Pos> {
         return self.get_data_neighbors_pos_that(pos, false);
     }
 
+    /// Returns positions of all missing data nodes that are neighbors of the given position.
     pub fn get_missing_data_neighbors_pos(&self, pos: Pos) -> Vec<Pos> {
         return self.get_data_neighbors_pos_that(pos, true);
     }
@@ -265,7 +298,7 @@ mod tests {
             );
             assert_eq!(
                 *data_node.parities.get(&dir).unwrap(),
-                NodeId::new(GridType::from(dir), parity_pos),
+                NodeId::new(NodeType::from(dir), parity_pos),
                 //NodeId::new(strand_type.into(), parity_pos),
                 "Data node at {:?} should be connected to correct parity at {:?}",
                 data_pos,
@@ -364,7 +397,7 @@ mod tests {
         graph.add_parity_node(parity_pos, bytes("parity_chunk"), StrandType::Right);
 
         let data_id = NodeId::new_data_id(data_pos);
-        let parity_id = NodeId::new(GridType::ParityRight, parity_pos);
+        let parity_id = NodeId::new(NodeType::ParityRight, parity_pos);
 
         if let Some(Node::Data(data_node)) = graph.get_node(&data_id) {
             assert_eq!(data_node.chunk, bytes("data_chunk"));

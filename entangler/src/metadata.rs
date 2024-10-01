@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 use crate::parity::StrandType;
 
+/// Metadata struct that holds information about the original blob and the parity blobs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Metadata {
     pub orig_hash: String,

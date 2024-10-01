@@ -1,6 +1,10 @@
 // Copyright 2024 Entanglement Contributors
 // SPDX-License-Identifier: Apache-2.0, MIT
 
+/// This is the main entry point for the Entanglement CLI application.
+///
+/// The application supports uploading and downloading files using the Entangler library.
+/// It uses the `clap` crate for command-line argument parsing and `stderrlog` for logging.
 use std::net::SocketAddr;
 
 use clap::{Args, Parser, Subcommand};

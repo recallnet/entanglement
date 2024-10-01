@@ -7,7 +7,8 @@ use anyhow::Result;
 
 use bytes::Bytes;
 
-/// The executer is responsible for creating a lattice from the given grid.
+/// The executer executes the entanglement process on the given grid.
+/// It creates `alpha` parity grids.
 pub struct Executer {
     alpha: u8,
 }
@@ -20,7 +21,7 @@ impl Executer {
     }
 
     /// Executes the entanglement process on the given grid.
-    /// It creates a lattice with the original grid and the parity grids.
+    /// It creates `alpha` parity grids.
     pub fn execute(&self, grid: grid::Grid) -> Result<Vec<ParityGrid>> {
         let mut parity_grids = Vec::with_capacity(self.alpha as usize);
         let strand_types = vec![StrandType::Left, StrandType::Horizontal, StrandType::Right];

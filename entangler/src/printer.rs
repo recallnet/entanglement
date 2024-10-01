@@ -6,6 +6,27 @@ use std::fmt::{self, Write};
 use crate::grid::{Dir, Pos};
 use crate::lattice::Graph;
 
+/// Printer prints a graph state to the console.
+/// Here is an example of a printed graph:
+/// ```
+///      0   1   2   3   
+///    \   X           /  
+/// 0    O           O  
+///    \   \   X       \  
+/// 1  -     O -       -
+///                       
+/// 2            O -    
+///    /   /           /  
+/// 3    O           O  
+///    /   X           \  
+/// ```
+/// The graph is printed in a grid format, with each node represented by a character.
+/// Where:
+/// - `O` represents a data node
+/// - `/` represents a Left parity node
+/// - `\` represents a Right parity node
+/// - `-` represents a Horizontal parity
+/// - `X` represents both a Left and Right parity node
 pub struct Printer<'a> {
     graph: &'a Graph,
     max_x: i64,
@@ -45,6 +66,7 @@ impl<'a> Printer<'a> {
         header_size + (height as usize + 1) * (row_size + diagonal_size)
     }
 
+    /// Print the graph to the console.
     pub fn print(&mut self) {
         self.print_header();
         self.buffer.push('\n');

@@ -5,6 +5,9 @@ use crate::grid::{Dir, Grid, Pos};
 use serde::{Deserialize, Serialize};
 use std;
 
+/// Enum representing the direction of a strand.
+/// Strand is bi-directional. `Dir` should be used if the direction matters.
+/// `StrandType` is converted to `Dir` when needed which by default represents the forward direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum StrandType {
     Left,
@@ -21,6 +24,7 @@ impl StrandType {
         }
     }
 
+    /// Returns the opposite (backward) direction of the current strand.
     pub fn to_opposite_dir(self) -> Dir {
         Dir::from(self).opposite()
     }
@@ -95,6 +99,7 @@ impl std::ops::SubAssign<StrandType> for Pos {
     }
 }
 
+/// A grid with a strand type.
 pub struct ParityGrid {
     pub grid: Grid,
     pub strand_type: StrandType,

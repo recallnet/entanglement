@@ -13,39 +13,15 @@ pub enum Error {
     InvalidNumItems(usize, usize),
 }
 
-fn build_column_first_grid(data: Vec<Bytes>, height: usize) -> Result<Vec<Vec<Bytes>>, Error> {
-    if height == 0 {
-        return Err(Error::InvalidHeight(height));
-    }
-    if data.len() < height {
-        return Err(Error::InvalidNumItems(data.len(), height));
-    }
-
-    let num_cols = (data.len() + height - 1) / height;
-    let mut grid: Vec<Vec<Bytes>> = Vec::with_capacity(num_cols);
-    for _ in 0..num_cols {
-        grid.push(Vec::with_capacity(height));
-    }
-    for (i, datum) in data.into_iter().enumerate() {
-        grid[i / height].push(datum);
-    }
-
-    Ok(grid)
-}
-
-fn mod_int(int: i64, m: usize) -> usize {
-    let w = m as i64;
-    ((int % w + w) % w) as usize
-}
-
+/// Direction enum for moving around the grid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Dir {
-    UL,
-    UR,
-    L,
-    R,
-    DL,
-    DR,
+    UL, // Up-left
+    UR, // Up-right
+    L,  // Left
+    R,  // Right
+    DL, // Down-left
+    DR, // Down-right
 }
 
 impl Dir {
@@ -83,6 +59,7 @@ impl Dir {
     }
 }
 
+/// Position struct for representing a position in the grid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Pos {
     pub x: i64,
@@ -103,6 +80,7 @@ where
 }
 
 impl Pos {
+    /// Returns the position adjacent to the current position in the given direction.
     pub fn adjacent(&self, dir: Dir) -> Pos {
         let (dx, dy) = dir.to_i64();
         Pos {
@@ -111,6 +89,7 @@ impl Pos {
         }
     }
 
+    /// Returns the position at a given distance in the given direction.
     pub fn near(&self, dir: Dir, distance: usize) -> Pos {
         let (dx, dy) = dir.to_i64();
         Pos {
@@ -119,6 +98,8 @@ impl Pos {
         }
     }
 
+    /// Returns the direction from the current position to the given position.
+    /// Returns `None` if the positions are not adjacent along available directions.
     pub fn dir_to(&self, other: Pos) -> Option<Dir> {
         let dx = other.x - self.x;
         let dy = other.y - self.y;
@@ -164,9 +145,22 @@ impl Pos {
     }
 }
 
+/// Positioner is responsible for providing valid positions in the grid given it's dimensions.
+/// It can handle out-of-bound positions and wrap them around to the other side of the grid.
+///
+/// The position are calculated assuming height of the grid is fixed but width is not and depends
+/// on the number of items. The Grid is assumed to be leap-window aligned (LW), meaning that when
+/// wrapping along x axis, the grid will ignore the number of actual items (or available columns)
+/// and calculate the wrapping index based on the number of items that would be present if the
+/// grid was fully populated.
+///   Example:
+///    - Grid with 7 items and height 3 would have 3 columns and 3 rows. Here the wrapping is
+/// straightforward, as number of columns, 3, is equal to LW width
+///    - Grid with 7 items and height 4 would have 2 columns and 4 rows. Here we have 2 columns
+/// and LW width = 4. So, when wrapping, the grid will consider 4 columns and wrap around to
+/// the first column.
 #[derive(Debug, Clone, Copy)]
 pub struct Positioner {
-    // TODO: move graph printer to a separate struct that takes this as input
     pub(crate) height: usize,
     num_items: usize,
     lw_aligned_width: usize,
@@ -187,25 +181,30 @@ impl Positioner {
         ((num_items + lw - 1) / lw) * height
     }
 
+    /// Normalizes the given position by making sure out-of-bounds position is wrapped along axises.
     pub fn normalize(&self, pos: Pos) -> Pos {
-        let x = self.mod_x(pos.x);
-        let y = self.mod_y(pos.y);
-        Pos::new(x as i64, y as i64)
+        Pos::new(self.mod_x(pos.x) as i64, self.mod_y(pos.y) as i64)
     }
 
     fn mod_x(&self, x: i64) -> usize {
-        mod_int(x as i64, self.lw_aligned_width)
+        mod_int(x, self.lw_aligned_width)
     }
 
     fn mod_y(&self, y: i64) -> usize {
-        mod_int(y as i64, self.height)
+        mod_int(y, self.height)
     }
 
-    pub fn has_cell(&self, pos: Pos) -> bool {
+    /// Returns true if the given position is available. Even is a position is normalized it might
+    /// be missing from the grid because LW alignment might leave empty spots in the end of the
+    /// grid.
+    pub fn is_pos_available(&self, pos: Pos) -> bool {
         let normalized = self.normalize(pos);
         (normalized.x as usize * self.height + normalized.y as usize) < self.num_items
     }
 
+    /// Returns a direction from one position to another taking in to account potentially
+    /// adjacent position, but on the opposite sides of a grid.
+    /// For example if grid has with 9, then pos (0, 0) and (8, 1) are adjacent.
     pub fn determine_dir(&self, from: Pos, mut to: Pos) -> Option<Dir> {
         match from.dir_to(to) {
             Some(dir) => Some(dir),
@@ -231,7 +230,12 @@ impl Positioner {
     }
 }
 
-/// Grid represents a 2D grid of chunks built in column-first order.
+fn mod_int(int: i64, m: usize) -> usize {
+    let w = m as i64;
+    ((int % w + w) % w) as usize
+}
+
+/// Grid represents a 2D grid of chunks arranged in column-first order.
 /// The grid is wrapped in both dimensions, so that negative or out-of-bound indices wrap
 /// around to the end or a side of the grid.
 ///
@@ -239,7 +243,7 @@ impl Positioner {
 /// will ignore the number of actual items (or available columns) and calculate the wrapping
 /// index based on the number of items that would be present if the grid was fully populated.
 ///   Example:
-///    - Grid with 7 items and height 3 would have 3 columns and 3 rows. Here the wrapping in
+///    - Grid with 7 items and height 3 would have 3 columns and 3 rows. Here the wrapping is
 /// straightforward, as number of columns, 3, is equal to LW width
 ///    - Grid with 7 items and height 4 would have 2 columns and 4 rows. Here we have 2 columns
 /// and LW width = 4. So, when wrapping, the grid will consider 4 columns and wrap around to
@@ -259,17 +263,7 @@ impl Grid {
         })
     }
 
-    pub fn from_bytes(data: Bytes, height: usize, chunk_size: usize) -> Result<Self, Error> {
-        let num_items = (data.len() + chunk_size - 1) / chunk_size;
-        let mut chunks = Vec::new();
-        for i in 0..num_items {
-            let start = i * chunk_size;
-            let end = usize::min((i + 1) * chunk_size, data.len());
-            chunks.push(data.slice(start..end));
-        }
-        Self::new(chunks, height)
-    }
-
+    /// Creates a new empty grid for `num_items` items arranged in `height`-sized columns.
     pub fn new_empty(num_items: usize, height: usize) -> Result<Self, Error> {
         if height == 0 {
             return Err(Error::InvalidHeight(height));
@@ -290,6 +284,7 @@ impl Grid {
         })
     }
 
+    /// Converts item index into a position
     pub fn index_to_pos(&self, index: usize) -> Pos {
         Pos {
             x: (index / self.get_height()) as i64,
@@ -297,17 +292,22 @@ impl Grid {
         }
     }
 
-    /// Sets the value of a cell at the given coordinates.
+    /// Sets the value of a cell at the given position.
     pub fn set_cell(&mut self, pos: Pos, value: Bytes) {
         let norm_pos = self.positioner.normalize(pos);
         self.data[norm_pos.x as usize][norm_pos.y as usize] = value;
     }
 
+    /// Gets a cell at the given position.
+    /// If cell at the given position doesn't exist, it will panic.
+    /// If there is uncertainty if the cell at the given position exists, `try_get_cell`
+    /// method should be used.
     pub fn get_cell(&self, pos: Pos) -> &Bytes {
         let norm_pos = self.positioner.normalize(pos);
         &self.data[norm_pos.x as usize][norm_pos.y as usize]
     }
 
+    /// Gets a cell at the given position is it exists. Return `None` otherwise.
     pub fn try_get_cell(&self, pos: Pos) -> Option<&Bytes> {
         if self.has_cell(pos) {
             Some(self.get_cell(pos))
@@ -326,8 +326,10 @@ impl Grid {
         self.data.get(0).map_or(0, |col| col.len())
     }
 
+    /// Returns true if cell at the given position exists. Can be used before calling
+    /// `get_cell` to make sure it won't panic.
     pub fn has_cell(&self, pos: Pos) -> bool {
-        self.positioner.has_cell(pos)
+        self.positioner.is_pos_available(pos)
     }
 
     /// Assembles the grid data into a single Bytes object.
@@ -341,9 +343,30 @@ impl Grid {
         Bytes::from(data)
     }
 
+    /// Returns a number of items the grid deals with.
     pub fn get_num_items(&self) -> usize {
         self.positioner.num_items
     }
+}
+
+fn build_column_first_grid(data: Vec<Bytes>, height: usize) -> Result<Vec<Vec<Bytes>>, Error> {
+    if height == 0 {
+        return Err(Error::InvalidHeight(height));
+    }
+    if data.len() < height {
+        return Err(Error::InvalidNumItems(data.len(), height));
+    }
+
+    let num_cols = (data.len() + height - 1) / height;
+    let mut grid: Vec<Vec<Bytes>> = Vec::with_capacity(num_cols);
+    for _ in 0..num_cols {
+        grid.push(Vec::with_capacity(height));
+    }
+    for (i, datum) in data.into_iter().enumerate() {
+        grid[i / height].push(datum);
+    }
+
+    Ok(grid)
 }
 
 #[cfg(test)]
@@ -394,20 +417,6 @@ mod tests {
             &data[3],
             "Cell (1, 1) should contain 'd'"
         );
-    }
-
-    #[test]
-    fn test_grid_from_bytes() {
-        let data = Bytes::from("abcdefghi");
-        let grid = Grid::from_bytes(data.clone(), 3, 2).unwrap();
-        assert_eq!(grid.get_width(), 2, "Grid width should be 2");
-        assert_eq!(grid.get_height(), 3, "Grid height should be 3");
-        assert_eq!(grid.get_num_items(), 5, "Grid should have 7 items");
-        assert_eq!(grid.get_cell((0, 0).into()), &Bytes::from("ab"));
-        assert_eq!(grid.get_cell((0, 1).into()), &Bytes::from("cd"));
-        assert_eq!(grid.get_cell((0, 2).into()), &Bytes::from("ef"));
-        assert_eq!(grid.get_cell((1, 0).into()), &Bytes::from("gh"));
-        assert_eq!(grid.get_cell((1, 1).into()), &Bytes::from("i"));
     }
 
     #[test]
