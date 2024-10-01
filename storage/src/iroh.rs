@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use core::net::SocketAddr;
 use futures::stream;
+use iroh::client::blobs::ReadAtLen;
 use iroh::{blobs::Hash, client::Iroh as Client};
 use std::sync::Arc;
 use std::{path::Path, str::FromStr};
@@ -147,11 +148,14 @@ impl Storage for IrohStorage {
                 }
 
                 let remaining = total_size - offset;
-                let len = std::cmp::min(CHUNK_SIZE, remaining as usize);
+                let len = std::cmp::min(CHUNK_SIZE as u64, remaining);
 
                 let chunk_id = offset as usize / CHUNK_SIZE;
                 Some(
-                    match client.read_at_to_bytes(hash, offset, Some(len)).await {
+                    match client
+                        .read_at_to_bytes(hash, offset, ReadAtLen::Exact(len))
+                        .await
+                    {
                         Ok(chunk) => {
                             let new_offset = offset + len as u64;
                             ((chunk_id, Ok(chunk)), (client, new_offset))
@@ -172,55 +176,12 @@ impl Storage for IrohStorage {
     ) -> Result<Bytes, StorageError> {
         let hash = parse_hash(hash)?;
         let offset = chunk_id as u64 * CHUNK_SIZE as u64;
-        let mut size = CHUNK_SIZE;
 
-        match self
-            .client()
+        self.client()
             .blobs()
-            .read_at_to_bytes(hash, offset, Some(size))
+            .read_at_to_bytes(hash, offset, ReadAtLen::AtMost(CHUNK_SIZE as u64))
             .await
-        {
-            Ok(bytes) => Ok(bytes),
-            Err(e) => {
-                let error_msg = e.to_string();
-                if error_msg.contains("requested range is out of bounds") {
-                    if let Some(correct_size) = error_msg
-                        .split("(")
-                        .last()
-                        .and_then(|s| s.strip_suffix(")"))
-                        .and_then(|s| s.parse::<usize>().ok())
-                    {
-                        size = correct_size.saturating_sub(offset as usize);
-                        if size == 0 {
-                            return Err(StorageError::ChunkNotFound(
-                                chunk_id.to_string(),
-                                hash.to_string(),
-                                e,
-                            ));
-                        }
-                        // Retry once with the new size
-                        return self
-                            .client()
-                            .blobs()
-                            .read_at_to_bytes(hash, offset, Some(size))
-                            .await
-                            .map_err(|e| {
-                                StorageError::ChunkNotFound(
-                                    chunk_id.to_string(),
-                                    hash.to_string(),
-                                    e,
-                                )
-                            });
-                    }
-                }
-                // If we couldn't parse the size or it's not an out of bounds error, return the original error
-                Err(StorageError::ChunkNotFound(
-                    chunk_id.to_string(),
-                    hash.to_string(),
-                    e,
-                ))
-            }
-        }
+            .map_err(|e| StorageError::ChunkNotFound(chunk_id.to_string(), hash.to_string(), e))
     }
 }
 
