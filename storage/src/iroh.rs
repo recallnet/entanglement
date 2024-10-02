@@ -135,7 +135,7 @@ impl Storage for IrohStorage {
             if err_str.contains("not found") {
                 return Err(StorageError::BlobNotFound(hash.to_string()));
             } else {
-                return Err(StorageError::StorageError(e.into()));
+                return Err(StorageError::StorageError(e));
             }
         }
         let total_size = reader?.size();
@@ -160,7 +160,7 @@ impl Storage for IrohStorage {
                             let new_offset = offset + len as u64;
                             ((chunk_id, Ok(chunk)), (client, new_offset))
                         }
-                        Err(e) => ((chunk_id, Err(e.into())), (client, offset + len as u64)),
+                        Err(e) => ((chunk_id, Err(e)), (client, offset + len as u64)),
                     },
                 )
             },

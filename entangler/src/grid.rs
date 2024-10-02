@@ -3,7 +3,6 @@
 
 use anyhow::Result;
 use bytes::Bytes;
-use thiserror;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -29,7 +28,7 @@ impl Dir {
         [Dir::UL, Dir::UR, Dir::L, Dir::R, Dir::DL, Dir::DR]
     }
 
-    pub fn to_i64(&self) -> (i64, i64) {
+    pub fn to_i64(self) -> (i64, i64) {
         match self {
             Dir::UL => (-1, -1),
             Dir::UR => (1, -1),
@@ -155,10 +154,10 @@ impl Pos {
 /// grid was fully populated.
 ///   Example:
 ///    - Grid with 7 items and height 3 would have 3 columns and 3 rows. Here the wrapping is
-/// straightforward, as number of columns, 3, is equal to LW width
+///      straightforward, as number of columns, 3, is equal to LW width
 ///    - Grid with 7 items and height 4 would have 2 columns and 4 rows. Here we have 2 columns
-/// and LW width = 4. So, when wrapping, the grid will consider 4 columns and wrap around to
-/// the first column.
+///      and LW width = 4. So, when wrapping, the grid will consider 4 columns and wrap around to
+///      the first column.
 #[derive(Debug, Clone, Copy)]
 pub struct Positioner {
     pub(crate) height: usize,
@@ -244,10 +243,10 @@ fn mod_int(int: i64, m: usize) -> usize {
 /// index based on the number of items that would be present if the grid was fully populated.
 ///   Example:
 ///    - Grid with 7 items and height 3 would have 3 columns and 3 rows. Here the wrapping is
-/// straightforward, as number of columns, 3, is equal to LW width
+///      straightforward, as number of columns, 3, is equal to LW width
 ///    - Grid with 7 items and height 4 would have 2 columns and 4 rows. Here we have 2 columns
-/// and LW width = 4. So, when wrapping, the grid will consider 4 columns and wrap around to
-/// the first column.
+///      and LW width = 4. So, when wrapping, the grid will consider 4 columns and wrap around to
+///      the first column.
 #[derive(Debug, Clone)]
 pub struct Grid {
     data: Vec<Vec<Bytes>>,
@@ -323,7 +322,7 @@ impl Grid {
 
     /// Returns the height of the grid, i.e., the number of rows in each column.
     pub fn get_height(&self) -> usize {
-        self.data.get(0).map_or(0, |col| col.len())
+        self.data.first().map_or(0, |col| col.len())
     }
 
     /// Returns true if cell at the given position exists. Can be used before calling

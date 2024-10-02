@@ -37,9 +37,9 @@ pub type ByteStream<T> = Pin<Box<dyn Stream<Item = (T, Result<Bytes>)> + Send>>;
 
 /// Trait representing a storage backend.
 #[async_trait]
-pub trait Storage: Send + Clone + Unpin {
+pub trait Storage: Send + Clone {
     /// The type used to identify chunks.
-    type ChunkId: Clone + Default + PartialEq + Eq + std::hash::Hash + Unpin;
+    type ChunkId: Clone + Default + PartialEq + Eq + std::hash::Hash;
 
     /// Uploads the given bytes to the storage and returns a hash identifying the stored data.
     ///

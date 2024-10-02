@@ -93,13 +93,11 @@ impl<'a> Printer<'a> {
     fn print_diagonal_parity(&mut self, y: i64) {
         write!(self.buffer, "  ").unwrap();
         for x in -1..=self.max_x {
-            let has_left = !(x == self.max_x && y == self.height - 1)
-                && !(x == -1 && y == -1)
+            let has_left = !(x == self.max_x && y == self.height - 1 || x == -1 && y == -1)
                 && self
                     .graph
                     .has_parity_node_along_dir(Pos::new(x, y + 1), Dir::UR);
-            let has_right = !(x == self.max_x && y == -1)
-                && !(x == -1 && y == self.height - 1)
+            let has_right = !(x == self.max_x && y == -1 || x == -1 && y == self.height - 1)
                 && self
                     .graph
                     .has_parity_node_along_dir(Pos::new(x, y), Dir::DR);

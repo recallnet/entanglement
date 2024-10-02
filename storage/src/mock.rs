@@ -25,6 +25,12 @@ pub struct FakeStorage {
     fail_blobs: Arc<Mutex<HashMap<String, bool>>>,
 }
 
+impl Default for FakeStorage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FakeStorage {
     pub fn new() -> Self {
         FakeStorage {

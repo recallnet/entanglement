@@ -86,10 +86,8 @@ enum ConfigError {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    print!("main\n");
     let cli = Cli::parse();
 
-    print!("after Cli::parse\n");
     stderrlog::new()
         .module(module_path!())
         .timestamp(Timestamp::Millisecond)
@@ -98,9 +96,7 @@ async fn main() -> anyhow::Result<()> {
 
     let storage_config = cli.get_storage_config()?;
 
-    let iroh_config = match storage_config {
-        StorageConfig::Iroh(config) => config,
-    };
+    let StorageConfig::Iroh(iroh_config) = storage_config;
 
     let storage = match iroh_config {
         IrohConfig::Path(path) => IrohStorage::from_path(path).await?,
@@ -115,20 +111,15 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Upload(args) => {
             let bytes = tokio::fs::read(args.file.clone()).await?;
-            print!(
-                "uploading file {} of size {} bytes...\n",
-                args.file,
-                bytes.len()
-            );
             let (file_hash, meta_hash) = entangler.upload(bytes).await?;
-            print!("uploaded file. Hash: {}, Meta: {}\n", file_hash, meta_hash);
+            println!("uploaded file. Hash: {}, Meta: {}", file_hash, meta_hash);
         }
         Commands::Download(args) => {
             let bytes = entangler
                 .download(&args.hash, args.metadata_hash.as_deref())
                 .await?;
             tokio::fs::write(args.output, bytes).await?;
-            print!("downloaded file\n");
+            println!("downloaded file");
         }
     }
 

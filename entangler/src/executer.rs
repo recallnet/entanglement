@@ -25,10 +25,10 @@ impl Executer {
     pub fn execute(&self, grid: grid::Grid) -> Result<Vec<ParityGrid>> {
         let mut parity_grids = Vec::with_capacity(self.alpha as usize);
         let strand_types = vec![StrandType::Left, StrandType::Horizontal, StrandType::Right];
-        for i in 0..self.alpha as usize {
-            parity_grids.push(create_parity_grid(&grid, strand_types[i])?);
+        for strand_type in strand_types.into_iter().take(self.alpha as usize) {
+            parity_grids.push(create_parity_grid(&grid, strand_type)?);
         }
-        return Ok(parity_grids);
+        Ok(parity_grids)
     }
 }
 
@@ -166,14 +166,14 @@ mod tests {
 
         assert_eq!(parities.len(), 3);
 
-        let lh_strand = parities.get(0).unwrap();
-        assert_parity_grid(&lh_strand);
+        let lh_strand = parities.first().unwrap();
+        assert_parity_grid(lh_strand);
 
         let h_strand = parities.get(1).unwrap();
-        assert_parity_grid(&h_strand);
+        assert_parity_grid(h_strand);
 
         let rh_strand = parities.get(2).unwrap();
-        assert_parity_grid(&rh_strand);
+        assert_parity_grid(rh_strand);
     }
 
     #[test]
@@ -197,7 +197,7 @@ mod tests {
 
         assert_eq!(parities.len(), 3);
 
-        let lh_strand = parities.get(0).unwrap();
+        let lh_strand = parities.first().unwrap();
         assert_eq!(lh_strand.strand_type, StrandType::Left);
         assert_eq!(lh_strand.grid.get_cell(Pos::new(0, 0)), &entangle("a", "h"));
         assert_eq!(lh_strand.grid.get_cell(Pos::new(0, 1)), &entangle("b", "e"));
