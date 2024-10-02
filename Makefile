@@ -1,3 +1,19 @@
+.PHONY: all build install test clean lint check-fmt check-clippy
+
+all: lint build test doc
+
+build:
+	cargo build --release
+
+install:
+	cargo install --locked --path cli
+
+test:
+	cargo test --locked --workspace
+
+doc:
+	cargo doc --locked --no-deps --workspace --open
+
 clean:
 	cargo clean
 
