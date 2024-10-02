@@ -1,0 +1,29 @@
+[package]
+name = "entanglement_cli"
+description = "A command line interface (CLI) for the Aplha Entanglement."
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+keywords.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "entanglement"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+cid = { workspace = true }
+clap = { workspace = true }
+clap-stdin = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+stderrlog = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+entangler = { path = "../entangler" }
+storage = { path = "../storage" }

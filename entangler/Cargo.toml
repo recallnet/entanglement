@@ -1,0 +1,38 @@
+[package]
+name = "entangler"
+description = "Entangler that uses the Alpha Entanglement."
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+keywords.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+cid = { workspace = true }
+iroh = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dependencies.storage]
+path = "../storage"
+features = []
+
+[dev-dependencies.storage]
+path = "../storage"
+features = ["mock"]
+
+[lib]
+doctest = false
+
+[[test]]
+name = "entangler_integration_tests"
+path = "tests/entangler_test.rs"
