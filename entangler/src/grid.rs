@@ -3,7 +3,6 @@
 
 use anyhow::Result;
 use bytes::Bytes;
-use thiserror;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -29,7 +28,7 @@ impl Dir {
         [Dir::UL, Dir::UR, Dir::L, Dir::R, Dir::DL, Dir::DR]
     }
 
-    pub fn to_i64(&self) -> (i64, i64) {
+    pub fn to_i64(self) -> (i64, i64) {
         match self {
             Dir::UL => (-1, -1),
             Dir::UR => (1, -1),
@@ -323,7 +322,7 @@ impl Grid {
 
     /// Returns the height of the grid, i.e., the number of rows in each column.
     pub fn get_height(&self) -> usize {
-        self.data.get(0).map_or(0, |col| col.len())
+        self.data.first().map_or(0, |col| col.len())
     }
 
     /// Returns true if cell at the given position exists. Can be used before calling

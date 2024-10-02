@@ -140,7 +140,7 @@ impl<T: Storage> Entangler<T> {
                 self.repair_chunks(metadata, available_chunks, missing_indexes, chunk_id_map)
                     .await
             }
-            Err(e) => return Err(Error::StorageError(e.into())),
+            Err(e) => Err(Error::StorageError(e)),
         }
     }
 

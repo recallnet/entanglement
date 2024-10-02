@@ -247,12 +247,12 @@ impl Graph {
 
     /// Returns all data nodes that are neighbors of the given position.
     pub fn get_data_neighbor_pos(&self, pos: Pos) -> Vec<Pos> {
-        return self.get_data_neighbors_pos_that(pos, false);
+        self.get_data_neighbors_pos_that(pos, false)
     }
 
     /// Returns positions of all missing data nodes that are neighbors of the given position.
     pub fn get_missing_data_neighbors_pos(&self, pos: Pos) -> Vec<Pos> {
-        return self.get_data_neighbors_pos_that(pos, true);
+        self.get_data_neighbors_pos_that(pos, true)
     }
 
     fn get_data_neighbors_pos_that(&self, pos: Pos, is_missing: bool) -> Vec<Pos> {
@@ -262,7 +262,7 @@ impl Graph {
         for &dir in &directions {
             let neighbor_pos = self.positioner.normalize(pos.adjacent(dir));
             let neighbor_id = NodeId::new_data_id(neighbor_pos);
-            if self.nodes.contains_key(&neighbor_id) == !is_missing {
+            if self.nodes.contains_key(&neighbor_id) != is_missing {
                 neighbors.push(neighbor_pos);
             }
         }
@@ -548,7 +548,7 @@ mod tests {
     fn sparse_grid_scenario() {
         let mut graph = Graph::new(3, 9);
 
-        let data_positions = vec![
+        let data_positions = [
             Pos::new(0, 0),
             Pos::new(1, 0),
             Pos::new(2, 0),
@@ -561,7 +561,7 @@ mod tests {
             graph.add_data_node(*pos, bytes_str(&format!("d{}{}", pos.x, pos.y)));
         }
 
-        let parity_nodes = vec![
+        let parity_nodes = [
             (Pos::new(0, 0), StrandType::Horizontal),
             (Pos::new(1, 0), StrandType::Left),
             (Pos::new(2, 0), StrandType::Right),

@@ -17,7 +17,7 @@ pub enum Error {
     FailedToRepairChunks,
 
     #[error("Storage error: {0}")]
-    StorageError(#[from] StorageError),
+    Storage(#[from] StorageError),
 
     #[error("Error occurred: {0}")]
     Other(#[source] anyhow::Error),
@@ -51,13 +51,13 @@ impl<'a, 'b, T: Storage> Repairer<'a, 'b, T> {
         pos_to_id_map: HashMap<Pos, T::ChunkId>,
         id_to_pos_map: HashMap<T::ChunkId, Pos>,
     ) -> Self {
-        return Self {
+        Self {
             metadata,
             storage,
             grid,
             pos_to_id_map,
             id_to_pos_map,
-        };
+        }
     }
 
     pub async fn repair_chunks(&mut self, chunks: Vec<T::ChunkId>) -> Result<(), Error> {
@@ -145,7 +145,7 @@ impl<T: Storage> Healer<T> {
         self.visited.clear();
         self.stack.clear();
 
-        for pos in self.sick_nodes.to_owned() {
+        for pos in self.sick_nodes.clone() {
             if self.visited.contains(&pos) {
                 continue;
             }
@@ -183,7 +183,7 @@ impl<T: Storage> Healer<T> {
                     return true;
                     // Otherwise, continue to the next neighbor
                 }
-            } else if let Some(_) = self.sick_graph.get_data_node(neighbor_pos) {
+            } else if self.sick_graph.get_data_node(neighbor_pos).is_some() {
                 if self.schedule_visit(pos, neighbor_pos, &dirs[i..]) {
                     return false;
                 }
@@ -224,7 +224,7 @@ impl<T: Storage> Healer<T> {
             self.stack.push((neighbor_pos, Dir::all().to_vec()));
             return true;
         }
-        return false;
+        false
     }
 
     /// Tries to heal a sick data node using a healthy neighbor data node and a parity node
@@ -276,7 +276,7 @@ impl<T: Storage> Healer<T> {
                 }
             }
         }
-        return false;
+        false
     }
 
     /// Heals a sick data node using a healthy neighbor data node and a parity node between them.
@@ -286,7 +286,7 @@ impl<T: Storage> Healer<T> {
         parity_chunk: &Bytes,
         pos: Pos,
     ) {
-        let healed_data = xor_chunks(&neighbor_chunk, parity_chunk);
+        let healed_data = xor_chunks(neighbor_chunk, parity_chunk);
         self.healthy_graph.add_data_node(pos, healed_data);
         self.sick_graph.remove_data_node(pos);
     }

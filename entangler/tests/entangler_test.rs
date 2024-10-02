@@ -57,7 +57,7 @@ async fn load_parity_data_to_node<S>(
 
     let metadata_bytes = target_node.blobs().read_to_bytes(metadata_hash).await?;
     let metadata: Metadata = serde_json::from_slice(&metadata_bytes)?;
-    for (_, parity_hash) in &metadata.parity_hashes {
+    for parity_hash in metadata.parity_hashes.values() {
         let parity_hash = iroh::blobs::Hash::from_str(parity_hash)?;
         target_node
             .blobs()
@@ -187,7 +187,7 @@ async fn if_chunk_is_missing_and_metadata_is_provided_should_repair() -> Result<
     mock_storage.fake_failed_chunks(&hashes.0, vec![2]);
 
     let result = ent.download(&hashes.0, Some(&hashes.1)).await;
-    assert!(!result.is_err(), "expected download to succeed");
+    assert!(result.is_ok(), "expected download to succeed");
     let downloaded_bytes = result?;
     assert_eq!(downloaded_bytes, bytes, "downloaded data mismatch");
 
@@ -442,7 +442,7 @@ async fn test_entangler_repair_scenarios() -> Result<()> {
 
         if case.should_succeed {
             assert!(
-                !result.is_err(),
+                result.is_ok(),
                 "expected download to succeed for case: {}",
                 case.name
             );
