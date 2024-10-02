@@ -154,10 +154,10 @@ impl Pos {
 /// grid was fully populated.
 ///   Example:
 ///    - Grid with 7 items and height 3 would have 3 columns and 3 rows. Here the wrapping is
-/// straightforward, as number of columns, 3, is equal to LW width
+///      straightforward, as number of columns, 3, is equal to LW width
 ///    - Grid with 7 items and height 4 would have 2 columns and 4 rows. Here we have 2 columns
-/// and LW width = 4. So, when wrapping, the grid will consider 4 columns and wrap around to
-/// the first column.
+///      and LW width = 4. So, when wrapping, the grid will consider 4 columns and wrap around to
+///      the first column.
 #[derive(Debug, Clone, Copy)]
 pub struct Positioner {
     pub(crate) height: usize,
@@ -243,10 +243,10 @@ fn mod_int(int: i64, m: usize) -> usize {
 /// index based on the number of items that would be present if the grid was fully populated.
 ///   Example:
 ///    - Grid with 7 items and height 3 would have 3 columns and 3 rows. Here the wrapping is
-/// straightforward, as number of columns, 3, is equal to LW width
+///      straightforward, as number of columns, 3, is equal to LW width
 ///    - Grid with 7 items and height 4 would have 2 columns and 4 rows. Here we have 2 columns
-/// and LW width = 4. So, when wrapping, the grid will consider 4 columns and wrap around to
-/// the first column.
+///      and LW width = 4. So, when wrapping, the grid will consider 4 columns and wrap around to
+///      the first column.
 #[derive(Debug, Clone)]
 pub struct Grid {
     data: Vec<Vec<Bytes>>,
