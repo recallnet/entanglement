@@ -4,6 +4,7 @@
 use anyhow::Result;
 use bytes::{BufMut, Bytes, BytesMut};
 use entangler::{self, parity::StrandType, Entangler, Metadata};
+use std::collections::HashSet;
 use std::str::FromStr;
 use storage::{self, mock::FakeStorage, Storage};
 
@@ -223,6 +224,31 @@ async fn test_entangler_repair_scenarios() -> Result<()> {
         ]
     }
 
+    fn get_all_chunks_but_strand_revolution(strand: StrandType) -> Vec<usize> {
+        let excluded: HashSet<_> = match strand {
+            //           20
+            //        16
+            //     12
+            //   8
+            // 4
+            StrandType::Left => (0..HEIGHT).map(|x| (HEIGHT - 1) * (x + 1)).collect(),
+            //
+            //
+            // 2 7 12 17 22 27 32 37 42 47
+            //
+            //
+            StrandType::Horizontal => (0..WIDTH).map(|x| x * HEIGHT + 2).collect(),
+            // 0
+            //   6
+            //     12
+            //        18
+            //           24
+            StrandType::Right => (0..HEIGHT).map(|x| (HEIGHT + 1) * x).collect(),
+        };
+
+        (0..NUM_CHUNKS).filter(|x| !excluded.contains(x)).collect()
+    }
+
     struct TestCase {
         name: &'static str,
         setup: fn(&FakeStorage, &Metadata),
@@ -422,42 +448,94 @@ async fn test_entangler_repair_scenarios() -> Result<()> {
             },
             should_succeed: true,
         },
+        TestCase {
+            name: "only 1 chunk at (4, 1) is available, left parity and 1 strand revolution on horizontal parity",
+            setup: |st, metadata| {
+                st.fake_failed_chunks(&metadata.orig_hash, (0..21).chain(22..CHUNK_SIZE).collect());
+
+                make_parity_unavailable(st, metadata, StrandType::Right);
+
+                let h_parity_hash = &metadata.parity_hashes[&StrandType::Horizontal];
+                st.fake_failed_download(h_parity_hash);
+                st.fake_failed_chunks(h_parity_hash, get_all_chunks_but_strand_revolution(StrandType::Horizontal));
+            },
+            should_succeed: true,
+        },
+        TestCase {
+            name: "only 1 chunk at (4, 1) is available, horizontal parity and 1 strand revolution on right parity",
+            setup: |st, metadata| {
+                st.fake_failed_chunks(&metadata.orig_hash, (0..21).chain(22..CHUNK_SIZE).collect());
+
+                make_parity_unavailable(st, metadata, StrandType::Left);
+
+                let r_parity_hash = &metadata.parity_hashes[&StrandType::Right];
+                st.fake_failed_download(r_parity_hash);
+                st.fake_failed_chunks(r_parity_hash, get_all_chunks_but_strand_revolution(StrandType::Right));
+            },
+            should_succeed: true,
+        },
+        TestCase {
+            name: "only 1 chunk at (4, 1) is available, right parity and 1 strand revolution on left parity",
+            setup: |st, metadata| {
+                st.fake_failed_chunks(&metadata.orig_hash, (0..21).chain(22..CHUNK_SIZE).collect());
+
+                make_parity_unavailable(st, metadata, StrandType::Horizontal);
+
+                let l_parity_hash = &metadata.parity_hashes[&StrandType::Left];
+                st.fake_failed_download(l_parity_hash);
+                st.fake_failed_chunks(l_parity_hash, get_all_chunks_but_strand_revolution(StrandType::Left));
+            },
+            should_succeed: true,
+        },
     ];
 
     for case in test_cases {
-        println!("Running test case: {}", case.name);
-
-        let mock_storage = FakeStorage::new();
-        let ent = Entangler::new(mock_storage.clone(), 3, HEIGHT as u8, HEIGHT as u8)?;
-
-        let bytes = create_bytes(NUM_CHUNKS);
-        let hashes = ent.upload(bytes.clone()).await?;
-        let metadata = load_metadata(&hashes.1, &mock_storage).await?;
-
-        mock_storage.fake_failed_download(&metadata.orig_hash);
-
-        (case.setup)(&mock_storage, &metadata);
-
-        let result = ent.download(&hashes.0, Some(&hashes.1)).await;
-
-        if case.should_succeed {
-            assert!(
-                result.is_ok(),
-                "expected download to succeed for case: {}",
-                case.name
+        for upload_method in ["upload", "entangle_uploaded"] {
+            println!(
+                "Running test case: {}. Upload method: {}",
+                case.name, upload_method
             );
-            let downloaded_bytes = result?;
-            assert_eq!(
-                downloaded_bytes, bytes,
-                "downloaded data mismatch for case: {}",
-                case.name
-            );
-        } else {
-            assert!(
-                result.is_err(),
-                "expected download to fail for case: {}",
-                case.name
-            );
+
+            let mock_storage = FakeStorage::new();
+            let ent = Entangler::new(mock_storage.clone(), 3, HEIGHT as u8, HEIGHT as u8)?;
+
+            let bytes = create_bytes(NUM_CHUNKS);
+
+            let hashes = if upload_method == "upload" {
+                let hash = mock_storage.upload_bytes(bytes.clone()).await?;
+                let metadata_hash = ent.entangle_uploaded(hash.clone()).await?;
+                (hash, metadata_hash)
+            } else {
+                ent.upload(bytes.clone()).await?
+            };
+
+            let metadata = load_metadata(&hashes.1, &mock_storage).await?;
+
+            mock_storage.fake_failed_download(&metadata.orig_hash);
+
+            (case.setup)(&mock_storage, &metadata);
+
+            let result = ent.download(&hashes.0, Some(&hashes.1)).await;
+
+            if case.should_succeed {
+                assert!(
+                    result.is_ok(),
+                    "expected download to succeed for case: {}",
+                    case.name
+                );
+                let downloaded_bytes = result?;
+                assert_eq!(
+                    downloaded_bytes, bytes,
+                    "downloaded data mismatch for case: {}",
+                    case.name
+                );
+            } else {
+                assert!(
+                    result.is_err(),
+                    "expected download to fail for case: {}",
+                    case.name
+                );
+            }
         }
     }
 

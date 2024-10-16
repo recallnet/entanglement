@@ -73,16 +73,24 @@ impl<T: Storage> Entangler<T> {
     /// Returns the hash of the original data and the hash of the metadata.
     pub async fn upload(&self, bytes: impl Into<Bytes> + Send) -> Result<(String, String)> {
         let bytes: Bytes = bytes.into();
-        let chunks = bytes_to_chunks(bytes.clone(), CHUNK_SIZE);
+        let orig_hash = self.storage.upload_bytes(bytes.clone()).await?;
+        let metadata_hash = self.entangle(bytes, orig_hash.clone()).await?;
+        Ok((orig_hash, metadata_hash))
+    }
+
+    /// Creates entangled parity blobs for the given data and uploads them to the storage backend.
+    /// The original data is also uploaded to the storage backend.
+    /// Returns the hash of the original data and the hash of the metadata.
+    async fn entangle(&self, bytes: Bytes, hash: String) -> Result<String> {
+        let num_bytes = bytes.len();
+
+        let chunks = bytes_to_chunks(bytes, CHUNK_SIZE);
         let num_chunks = chunks.len();
 
         let orig_grid = Grid::new(chunks, usize::min(self.s as usize, num_chunks))?;
 
         let exec = executer::Executer::new(self.alpha);
         let parities = exec.execute(orig_grid)?;
-
-        let num_bytes = bytes.len();
-        let orig_hash = self.storage.upload_bytes(bytes).await?;
 
         let mut parity_hashes = HashMap::new();
         for parity_grid in parities {
@@ -92,7 +100,7 @@ impl<T: Storage> Entangler<T> {
         }
 
         let metadata = Metadata {
-            orig_hash: orig_hash.clone(),
+            orig_hash: hash,
             parity_hashes,
             num_bytes: num_bytes as u64,
             chunk_size: CHUNK_SIZE as u64,
@@ -103,7 +111,15 @@ impl<T: Storage> Entangler<T> {
         let metadata = serde_json::to_string(&metadata).unwrap();
         let metadata_hash = self.storage.upload_bytes(metadata).await?;
 
-        Ok((orig_hash, metadata_hash))
+        Ok(metadata_hash)
+    }
+
+    /// Entangles the uploaded data identified by the given hash, uploads entangled parity blobs
+    /// to the storage backend, and returns the hash of the metadata. [Metadata]
+    /// Returns the hash of the metadata.
+    pub async fn entangle_uploaded(&self, hash: String) -> Result<String> {
+        let orig_data = self.storage.download_bytes(&hash).await?;
+        self.entangle(orig_data, hash).await
     }
 
     /// Downloads the data identified by the given hash. If the data is corrupted, it attempts to
