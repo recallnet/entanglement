@@ -52,6 +52,10 @@ pub struct Entangler<T: Storage> {
 }
 
 impl<T: Storage> Entangler<T> {
+    /// Creates a new `Entangler` instance with the given storage backend, alpha, s, and p parameters.
+    /// The alpha parameter determines the number of parity chunks to generate for each data chunk.
+    /// The s parameter determines the number of horizontal strands in the grid.
+    /// The p parameter determines the number of helical strands in the grid.
     pub fn new(storage: T, alpha: u8, s: u8, p: u8) -> Result<Self, Error> {
         if alpha == 0 || s == 0 {
             return Err(Error::InvalidEntanglementParameter(
