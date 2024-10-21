@@ -5,7 +5,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::Stream;
-use std::pin::Pin;
+use std::{fmt::Display, pin::Pin};
 use thiserror;
 
 /// Error type for storage operations.
@@ -32,14 +32,23 @@ pub enum Error {
     Other(#[source] anyhow::Error),
 }
 
-/// Type alias for a stream of bytes.
+/// Trait used to identify chunks.
+pub trait ChunkId: Clone + Default + PartialEq + Eq + std::hash::Hash + Display {}
+
+/// Type alias for a stream of chunks.
 pub type ByteStream<T> = Pin<Box<dyn Stream<Item = (T, Result<Bytes>)> + Send>>;
+
+/// Trait for mapping chunk indices to chunk ids and vice versa.
+pub trait ChunkIdMapper<T: ChunkId>: Clone {
+    fn index_to_id(&self, index: u64) -> Result<T, Error>;
+    fn id_to_index(&self, chunk_id: &T) -> Result<u64, Error>;
+}
 
 /// Trait representing a storage backend.
 #[async_trait]
 pub trait Storage: Send + Clone {
-    /// The type used to identify chunks.
-    type ChunkId: Clone + Default + PartialEq + Eq + std::hash::Hash;
+    type ChunkId: ChunkId;
+    type ChunkIdMapper: ChunkIdMapper<Self::ChunkId>;
 
     /// Uploads the given bytes to the storage and returns a hash identifying the stored data.
     ///
@@ -85,4 +94,6 @@ pub trait Storage: Send + Clone {
     ///
     /// A `Result` containing the downloaded chunk bytes, or an `Error` if the download fails.
     async fn download_chunk(&self, hash: &str, chunk_id: Self::ChunkId) -> Result<Bytes, Error>;
+
+    fn chunk_id_mapper(&self, hash: &str) -> Self::ChunkIdMapper;
 }

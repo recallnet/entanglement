@@ -56,7 +56,7 @@ fn create_parity_grid(grid: &Grid, strand_type: StrandType) -> Result<ParityGrid
                     // we need LW size. At the moment we assume it's square with side equal to grid's height
                     let lw_size = grid.get_height();
                     // calculate the number of steps to go along the strand
-                    let steps = lw_size - (pos.x as usize % lw_size);
+                    let steps = lw_size - (pos.x as u64 % lw_size);
                     let pair = grid.get_cell(pos.near(strand_type.into(), steps));
                     parity_grid.set_cell(pos, entangle_chunks(cell, pair));
                 }
@@ -258,18 +258,18 @@ mod tests {
             Bytes::from(vec![0x87, 0x96, 0xA5, 0xB4, 0xC3, 0xD2, 0xE1, 0xF0]),
             Bytes::from(vec![0x1A, 0x2B, 0x3C, 0x4D, 0x5E, 0x6F, 0x70, 0x81]),
         ];
-        const HEIGHT: usize = 3;
-        const WIDTH: usize = 6;
+        const HEIGHT: u64 = 3;
+        const WIDTH: u64 = 6;
         let grid = Grid::new(chunks.clone(), HEIGHT).unwrap();
 
         let executer = Executer::new(3);
         let parities = executer.execute(grid.clone()).unwrap();
 
-        assert_eq!(parities.len(), HEIGHT);
+        assert_eq!(parities.len() as u64, HEIGHT);
 
         for parity_grid in parities {
             let assembled_data = parity_grid.grid.assemble_data();
-            assert_eq!(assembled_data.len(), WIDTH * HEIGHT * 8);
+            assert_eq!(assembled_data.len() as u64, WIDTH * HEIGHT * 8);
 
             for x in 0..WIDTH as i64 {
                 for y in 0..HEIGHT as i64 {

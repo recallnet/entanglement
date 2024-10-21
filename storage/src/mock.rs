@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::storage::{ByteStream, Error as StorageError, Storage};
+use crate::storage::{ByteStream, ChunkIdMapper, Error as StorageError, Storage};
 
 const CHUNK_SIZE: usize = 1024;
 
@@ -21,7 +21,7 @@ const CHUNK_SIZE: usize = 1024;
 #[derive(Clone)]
 pub struct FakeStorage {
     data: Arc<Mutex<HashMap<String, Vec<Bytes>>>>,
-    fail_chunks: Arc<Mutex<HashMap<String, Vec<usize>>>>,
+    fail_chunks: Arc<Mutex<HashMap<String, Vec<u64>>>>,
     fail_blobs: Arc<Mutex<HashMap<String, bool>>>,
 }
 
@@ -41,7 +41,7 @@ impl FakeStorage {
     }
 
     /// Simulate a failure for a specific chunk of a blob.
-    pub fn fake_failed_chunks(&self, hash: &str, chunks: Vec<usize>) {
+    pub fn fake_failed_chunks(&self, hash: &str, chunks: Vec<u64>) {
         self.fail_chunks
             .lock()
             .unwrap()
@@ -57,9 +57,23 @@ impl FakeStorage {
     }
 }
 
+#[derive(Clone)]
+pub struct FakeChunkIdMapper {}
+
+impl ChunkIdMapper<u64> for FakeChunkIdMapper {
+    fn index_to_id(&self, index: u64) -> Result<u64, StorageError> {
+        Ok(index as u64)
+    }
+
+    fn id_to_index(&self, chunk_id: &u64) -> Result<u64, StorageError> {
+        Ok(*chunk_id as u64)
+    }
+}
+
 #[async_trait]
 impl Storage for FakeStorage {
-    type ChunkId = usize;
+    type ChunkId = u64;
+    type ChunkIdMapper = FakeChunkIdMapper;
 
     async fn upload_bytes(&self, bytes: impl Into<Bytes> + Send) -> Result<String> {
         let bytes = bytes.into();
@@ -83,6 +97,10 @@ impl Storage for FakeStorage {
         Ok(hash_str)
     }
 
+    fn chunk_id_mapper(&self, _: &str) -> FakeChunkIdMapper {
+        FakeChunkIdMapper {}
+    }
+
     async fn download_bytes(&self, hash: &str) -> Result<Bytes, StorageError> {
         if self.fail_blobs.lock().unwrap().get(hash).is_some() {
             return Err(StorageError::BlobNotFound(hash.to_string()));
@@ -95,7 +113,7 @@ impl Storage for FakeStorage {
             .ok_or_else(|| StorageError::BlobNotFound(hash.to_string()))
     }
 
-    async fn iter_chunks(&self, hash: &str) -> Result<ByteStream<Self::ChunkId>, StorageError> {
+    async fn iter_chunks(&self, hash: &str) -> Result<ByteStream<u64>, StorageError> {
         let chunks = self
             .data
             .lock()
@@ -113,6 +131,7 @@ impl Storage for FakeStorage {
             .unwrap_or_default();
 
         let stream = stream::iter(chunks.into_iter().enumerate().map(move |(index, chunk)| {
+            let index = index as u64;
             if fail_chunks.contains(&index) {
                 (index, Err(anyhow::anyhow!("Simulated chunk failure")))
             } else {
@@ -123,11 +142,7 @@ impl Storage for FakeStorage {
         Ok(Box::pin(stream))
     }
 
-    async fn download_chunk(
-        &self,
-        hash: &str,
-        chunk_id: Self::ChunkId,
-    ) -> Result<Bytes, StorageError> {
+    async fn download_chunk(&self, hash: &str, chunk_id: u64) -> Result<Bytes, StorageError> {
         let fail_chunks = self
             .fail_chunks
             .lock()
@@ -147,7 +162,7 @@ impl Storage for FakeStorage {
         let data = self.data.lock().unwrap();
         let chunks = data.get(hash);
         if let Some(chunks) = chunks {
-            if chunk_id >= chunks.len() {
+            if chunk_id >= chunks.len() as u64 {
                 return Err(StorageError::ChunkNotFound(
                     chunk_id.to_string(),
                     hash.to_string(),
@@ -156,7 +171,7 @@ impl Storage for FakeStorage {
             }
         }
         chunks
-            .map(|chunks| chunks[chunk_id].clone())
+            .map(|chunks| chunks[chunk_id as usize].clone())
             .ok_or_else(|| StorageError::BlobNotFound(hash.to_string()))
     }
 }
@@ -262,7 +277,7 @@ mod tests {
         assert_eq!(chunk_results.len(), 3, "Expected 3 chunk results");
 
         for (index, (_, result)) in chunk_results.iter().enumerate() {
-            if index == fail_chunk_index {
+            if index == fail_chunk_index as usize {
                 assert!(result.is_err(), "Expected chunk {} to fail", index);
                 assert!(
                     matches!(result, Err(e) if e.to_string() == "Simulated chunk failure"),
@@ -335,7 +350,7 @@ mod tests {
 
         for chunk_id in 0..3 {
             let chunk = storage.download_chunk(&hash, chunk_id).await?;
-            let b = chunk_id * CHUNK_SIZE;
+            let b = chunk_id as usize * CHUNK_SIZE;
             let e = (b + CHUNK_SIZE).min(data.len());
             let expected_chunk = &data[b..e];
             assert_eq!(chunk, expected_chunk);

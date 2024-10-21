@@ -11,7 +11,7 @@ use iroh::{blobs::Hash, client::Iroh as Client};
 use std::sync::Arc;
 use std::{path::Path, str::FromStr};
 
-use crate::storage::{ByteStream, Error as StorageError, Storage};
+use crate::storage::{ByteStream, ChunkId, ChunkIdMapper, Error as StorageError, Storage};
 
 const CHUNK_SIZE: usize = 1024;
 
@@ -112,9 +112,25 @@ fn parse_hash(hash: &str) -> Result<Hash, StorageError> {
     Hash::from_str(hash).map_err(|e| StorageError::InvalidHash(hash.to_string(), e.to_string()))
 }
 
+impl ChunkId for u64 {}
+
+#[derive(Clone)]
+pub struct IrohChunkIdMapper {}
+
+impl ChunkIdMapper<u64> for IrohChunkIdMapper {
+    fn index_to_id(&self, index: u64) -> Result<u64, StorageError> {
+        Ok(index as u64)
+    }
+
+    fn id_to_index(&self, chunk_id: &u64) -> Result<u64, StorageError> {
+        Ok(*chunk_id as u64)
+    }
+}
+
 #[async_trait]
 impl Storage for IrohStorage {
-    type ChunkId = usize;
+    type ChunkId = u64;
+    type ChunkIdMapper = IrohChunkIdMapper;
 
     async fn upload_bytes(&self, bytes: impl Into<Bytes> + Send) -> Result<String> {
         let blob = self.client().blobs().add_bytes(bytes).await.unwrap();
@@ -127,7 +143,7 @@ impl Storage for IrohStorage {
         Ok(res)
     }
 
-    async fn iter_chunks(&self, hash: &str) -> Result<ByteStream<Self::ChunkId>, StorageError> {
+    async fn iter_chunks(&self, hash: &str) -> Result<ByteStream<u64>, StorageError> {
         let hash = parse_hash(hash)?;
         let reader = self.client().blobs().read(hash).await;
         if let Err(e) = reader {
@@ -150,7 +166,7 @@ impl Storage for IrohStorage {
                 let remaining = total_size - offset;
                 let len = std::cmp::min(CHUNK_SIZE as u64, remaining);
 
-                let chunk_id = offset as usize / CHUNK_SIZE;
+                let chunk_id = offset as u64 / CHUNK_SIZE as u64;
                 Some(
                     match client
                         .read_at_to_bytes(hash, offset, ReadAtLen::Exact(len))
@@ -169,11 +185,7 @@ impl Storage for IrohStorage {
         Ok(Box::pin(stream))
     }
 
-    async fn download_chunk(
-        &self,
-        hash: &str,
-        chunk_id: Self::ChunkId,
-    ) -> Result<Bytes, StorageError> {
+    async fn download_chunk(&self, hash: &str, chunk_id: u64) -> Result<Bytes, StorageError> {
         let hash = parse_hash(hash)?;
         let offset = chunk_id as u64 * CHUNK_SIZE as u64;
 
@@ -182,6 +194,10 @@ impl Storage for IrohStorage {
             .read_at_to_bytes(hash, offset, ReadAtLen::AtMost(CHUNK_SIZE as u64))
             .await
             .map_err(|e| StorageError::ChunkNotFound(chunk_id.to_string(), hash.to_string(), e))
+    }
+
+    fn chunk_id_mapper(&self, _: &str) -> IrohChunkIdMapper {
+        IrohChunkIdMapper {}
     }
 }
 

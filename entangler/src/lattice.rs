@@ -128,7 +128,7 @@ pub struct Graph {
 
 #[allow(dead_code)]
 impl Graph {
-    pub fn new(grid_height: usize, num_grid_items: usize) -> Self {
+    pub fn new(grid_height: u64, num_grid_items: u64) -> Self {
         Self {
             nodes: HashMap::new(),
             positioner: Positioner::new(grid_height, num_grid_items),

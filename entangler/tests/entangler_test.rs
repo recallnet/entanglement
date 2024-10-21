@@ -8,15 +8,15 @@ use std::collections::HashSet;
 use std::str::FromStr;
 use storage::{self, mock::FakeStorage, Storage};
 
-const HEIGHT: usize = 5;
+const HEIGHT: u64 = 5;
 // we choose WIDTH to be multiple of HEIGHT to avoid complex strand wrapping calculations
-const WIDTH: usize = 10;
-const NUM_CHUNKS: usize = HEIGHT * WIDTH;
-const CHUNK_SIZE: usize = 1024;
+const WIDTH: u64 = 10;
+const NUM_CHUNKS: u64 = HEIGHT * WIDTH;
+const CHUNK_SIZE: u64 = 1024;
 
 // create Bytes of n 1024-sized chunks
-fn create_bytes(n: usize) -> Bytes {
-    let mut bytes = BytesMut::with_capacity(n * CHUNK_SIZE);
+fn create_bytes(n: u64) -> Bytes {
+    let mut bytes = BytesMut::with_capacity((n * CHUNK_SIZE) as usize);
     for i in 0..n {
         let mut val = i as u8;
         for _ in 0..CHUNK_SIZE {
@@ -28,8 +28,8 @@ fn create_bytes(n: usize) -> Bytes {
 }
 
 fn xor_chunks(chunk1: &[u8], chunk2: &[u8]) -> Bytes {
-    let mut res = BytesMut::with_capacity(CHUNK_SIZE);
-    for i in 0..CHUNK_SIZE {
+    let mut res = BytesMut::with_capacity(CHUNK_SIZE as usize);
+    for i in 0..CHUNK_SIZE as usize {
         res.put_u8(chunk1[i] ^ chunk2[i]);
     }
     res.freeze()
@@ -97,7 +97,7 @@ async fn test_upload_bytes_to_iroh() -> Result<()> {
         "metadata size mismatch"
     );
     assert_eq!(
-        metadata.chunk_size, CHUNK_SIZE as u64,
+        metadata.chunk_size, CHUNK_SIZE,
         "metadata chunk_size mismatch"
     );
     assert_eq!(metadata.s, HEIGHT as u8, "metadata s mismatch");
@@ -106,16 +106,17 @@ async fn test_upload_bytes_to_iroh() -> Result<()> {
     for (strand_type, parity_hash) in &metadata.parity_hashes {
         let parity_hash = iroh::blobs::Hash::from_str(parity_hash)?;
         let parity = node.blobs().read_to_bytes(parity_hash).await?;
-        let mut expected_parity = BytesMut::with_capacity(NUM_CHUNKS * CHUNK_SIZE);
-        for i in 0..NUM_CHUNKS {
-            let chunk1 = &bytes[i * CHUNK_SIZE..(i + 1) * CHUNK_SIZE];
-            let x = (i / HEIGHT + 1) % WIDTH;
-            let y = ((i + HEIGHT) as i64 + strand_type.to_i64()) as usize % HEIGHT;
-            let i2 = x * HEIGHT + y;
-            let chunk2 = &bytes[i2 * CHUNK_SIZE..(i2 + 1) * CHUNK_SIZE];
+        let mut expected_parity =
+            BytesMut::with_capacity(NUM_CHUNKS as usize * CHUNK_SIZE as usize);
+        for i in 0..NUM_CHUNKS as usize {
+            let chunk1 = &bytes[i * CHUNK_SIZE as usize..(i + 1) * CHUNK_SIZE as usize];
+            let x = (i as u64 / HEIGHT + 1) % WIDTH;
+            let y = ((i as u64 + HEIGHT) as i64 + strand_type.to_i64()) as u64 % HEIGHT;
+            let i2 = (x * HEIGHT + y) as usize;
+            let chunk2 = &bytes[i2 * CHUNK_SIZE as usize..(i2 + 1) * CHUNK_SIZE as usize];
             let expected_chunk = xor_chunks(chunk1, chunk2);
             expected_parity.extend_from_slice(&expected_chunk);
-            let actual_chunk = &parity[i * CHUNK_SIZE..(i + 1) * CHUNK_SIZE];
+            let actual_chunk = &parity[i * CHUNK_SIZE as usize..(i + 1) * CHUNK_SIZE as usize];
             assert_eq!(
                 actual_chunk, expected_chunk,
                 "parity mismatch at chunk {} for strand {:?}",
@@ -208,7 +209,7 @@ async fn test_entangler_repair_scenarios() -> Result<()> {
     //  .  .  .  .  . 27
     //  3  .  .  . 23 28
     //  4  9  . 19 24 29
-    fn get_chunk_island() -> Vec<usize> {
+    fn get_chunk_island() -> Vec<u64> {
         vec![2, 6, 7, 8, 10, 11, 12, 13, 14, 16, 17, 18, 22]
     }
 
@@ -217,14 +218,14 @@ async fn test_entangler_repair_scenarios() -> Result<()> {
     //  .  .  .  .  . 27  .  . 42 47
     //  3  .  .  . 23 28 33 38 43  .
     //  4  9  . 19 24 29 34 39 44  .
-    fn get_several_chunk_islands() -> Vec<usize> {
+    fn get_several_chunk_islands() -> Vec<u64> {
         vec![
             2, 6, 7, 8, 10, 11, 12, 13, 14, 16, 17, 18, 22, 30, 31, 32, 35, 36, 37, 40, 41, 45, 48,
             49,
         ]
     }
 
-    fn get_all_chunks_but_strand_revolution(strand: StrandType) -> Vec<usize> {
+    fn get_all_chunks_but_strand_revolution(strand: StrandType) -> Vec<u64> {
         let excluded: HashSet<_> = match strand {
             //           20
             //        16
