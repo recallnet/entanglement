@@ -13,7 +13,7 @@ use std::{path::Path, str::FromStr};
 
 use crate::storage::{ByteStream, ChunkId, ChunkIdMapper, Error as StorageError, Storage};
 
-const CHUNK_SIZE: usize = 1024;
+const CHUNK_SIZE: u64 = 1024;
 
 /// `ClientProvider` is a trait for types that can provide an Iroh client.
 trait ClientProvider: Send + Sync {
@@ -115,14 +115,31 @@ fn parse_hash(hash: &str) -> Result<Hash, StorageError> {
 impl ChunkId for u64 {}
 
 #[derive(Clone)]
-pub struct IrohChunkIdMapper {}
+pub struct IrohChunkIdMapper {
+    hash: String,
+    num_chunks: u64,
+}
 
 impl ChunkIdMapper<u64> for IrohChunkIdMapper {
     fn index_to_id(&self, index: u64) -> Result<u64, StorageError> {
+        if index >= self.num_chunks {
+            return Err(StorageError::ChunkNotFound(
+                index.to_string(),
+                self.hash.clone(),
+                anyhow::anyhow!("Chunk index out of bounds"),
+            ));
+        }
         Ok(index as u64)
     }
 
     fn id_to_index(&self, chunk_id: &u64) -> Result<u64, StorageError> {
+        if *chunk_id >= self.num_chunks {
+            return Err(StorageError::ChunkNotFound(
+                chunk_id.to_string(),
+                self.hash.clone(),
+                anyhow::anyhow!("Chunk id out of bounds"),
+            ));
+        }
         Ok(*chunk_id as u64)
     }
 }
@@ -196,8 +213,19 @@ impl Storage for IrohStorage {
             .map_err(|e| StorageError::ChunkNotFound(chunk_id.to_string(), hash.to_string(), e))
     }
 
-    fn chunk_id_mapper(&self, _: &str) -> IrohChunkIdMapper {
-        IrohChunkIdMapper {}
+    async fn chunk_id_mapper(&self, hash: &str) -> Result<IrohChunkIdMapper, StorageError> {
+        let hash = parse_hash(hash).map_err(|_| StorageError::BlobNotFound(hash.to_string()))?;
+        let reader = self
+            .client()
+            .blobs()
+            .read(hash)
+            .await
+            .map_err(|_| StorageError::BlobNotFound(hash.to_string()))?;
+
+        Ok(IrohChunkIdMapper {
+            hash: hash.to_string(),
+            num_chunks: (reader.size() + CHUNK_SIZE - 1) / CHUNK_SIZE,
+        })
     }
 }
 
@@ -341,6 +369,44 @@ mod tests {
             result.err().unwrap(),
             StorageError::ChunkNotFound(c, h, _) if h == hash && c == "1"
         ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_chunk_id_mapper() -> Result<()> {
+        let storage = IrohStorage::new_in_memory().await?;
+        let data = vec![0u8; 3000]; // 3 chunks
+        let hash = storage.upload_bytes(data).await?;
+
+        let mapper = storage.chunk_id_mapper(&hash).await?;
+        assert_eq!(mapper.index_to_id(0)?, 0);
+        assert_eq!(mapper.index_to_id(1)?, 1);
+        assert_eq!(mapper.index_to_id(2)?, 2);
+        assert!(
+            matches!(mapper.id_to_index(&3), Err(StorageError::ChunkNotFound(c_id, h, _)) if c_id == "3" && h == hash),
+            "Expected error because chunk id is out of bounds"
+        );
+
+        let res = storage.chunk_id_mapper("invalid").await;
+        assert!(res.is_err(), "Expected error because hash is invalid");
+        assert!(
+            matches!(res.err().unwrap(), StorageError::BlobNotFound(h) if h == "invalid"),
+            "Expected error because hash is invalid"
+        );
+
+        // make valid not existing hash from existing hash by replacing 1 character
+        let last_char = (hash.chars().last().unwrap() as u8 + 1) as char;
+        let non_existing_hash = hash
+            .chars()
+            .take(hash.len() - 1)
+            .chain(std::iter::once(last_char))
+            .collect::<String>();
+        let res = storage.chunk_id_mapper(&non_existing_hash).await;
+        assert!(res.is_err(), "Expected error because hash does not exist");
+        assert!(
+            matches!(res.err().unwrap(), StorageError::BlobNotFound(h) if h == non_existing_hash),
+            "Expected error because hash does not exist"
+        );
         Ok(())
     }
 }

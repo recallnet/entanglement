@@ -40,7 +40,9 @@ pub type ByteStream<T> = Pin<Box<dyn Stream<Item = (T, Result<Bytes>)> + Send>>;
 
 /// Trait for mapping chunk indices to chunk ids and vice versa.
 pub trait ChunkIdMapper<T: ChunkId>: Clone {
+    /// Returns a chunk id corresponding to the given index.
     fn index_to_id(&self, index: u64) -> Result<T, Error>;
+    /// Returns the index corresponding to the given chunk id.
     fn id_to_index(&self, chunk_id: &T) -> Result<u64, Error>;
 }
 
@@ -95,5 +97,15 @@ pub trait Storage: Send + Clone {
     /// A `Result` containing the downloaded chunk bytes, or an `Error` if the download fails.
     async fn download_chunk(&self, hash: &str, chunk_id: Self::ChunkId) -> Result<Bytes, Error>;
 
-    fn chunk_id_mapper(&self, hash: &str) -> Self::ChunkIdMapper;
+    /// Returns a chunk id mapper for the blob identified by the given hash.
+    /// The chunk id mapper is used to map chunk indices to chunk ids and vice versa.
+    ///
+    /// # Arguments
+    ///
+    /// * `hash` - The hash identifying the blob.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing a chunk id mapper, or an `Error` if the operation fails.
+    async fn chunk_id_mapper(&self, hash: &str) -> Result<Self::ChunkIdMapper, Error>;
 }

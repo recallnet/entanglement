@@ -3,10 +3,10 @@
 
 use anyhow::Result;
 use bytes::{BufMut, Bytes, BytesMut};
-use entangler::{self, parity::StrandType, Entangler, Metadata};
+use entangler::{self, parity::StrandType, ChunkRange, Entangler, Metadata};
 use std::collections::HashSet;
 use std::str::FromStr;
-use storage::{self, mock::FakeStorage, Storage};
+use storage::{self, mock::FakeStorage, ChunkIdMapper, Storage};
 
 const HEIGHT: u64 = 5;
 // we choose WIDTH to be multiple of HEIGHT to avoid complex strand wrapping calculations
@@ -202,54 +202,53 @@ fn make_parity_unavailable(st: &FakeStorage, metadata: &Metadata, strand: Strand
     st.fake_failed_chunks(hash, (0..NUM_CHUNKS).collect());
 }
 
+//  0  5  . 15 20 25
+//  1  .  .  . 21 26
+//  .  .  .  .  . 27
+//  3  .  .  . 23 28
+//  4  9  . 19 24 29
+fn get_chunk_island() -> Vec<u64> {
+    vec![2, 6, 7, 8, 10, 11, 12, 13, 14, 16, 17, 18, 22]
+}
+
+//  0  5  . 15 20 25  .  .  .  .
+//  1  .  .  . 21 26  .  .  . 46
+//  .  .  .  .  . 27  .  . 42 47
+//  3  .  .  . 23 28 33 38 43  .
+//  4  9  . 19 24 29 34 39 44  .
+fn get_several_chunk_islands() -> Vec<u64> {
+    vec![
+        2, 6, 7, 8, 10, 11, 12, 13, 14, 16, 17, 18, 22, 30, 31, 32, 35, 36, 37, 40, 41, 45, 48, 49,
+    ]
+}
+
+fn get_all_chunks_but_strand_revolution(strand: StrandType) -> Vec<u64> {
+    let excluded: HashSet<_> = match strand {
+        //           20
+        //        16
+        //     12
+        //   8
+        // 4
+        StrandType::Left => (0..HEIGHT).map(|x| (HEIGHT - 1) * (x + 1)).collect(),
+        //
+        //
+        // 2 7 12 17 22 27 32 37 42 47
+        //
+        //
+        StrandType::Horizontal => (0..WIDTH).map(|x| x * HEIGHT + 2).collect(),
+        // 0
+        //   6
+        //     12
+        //        18
+        //           24
+        StrandType::Right => (0..HEIGHT).map(|x| (HEIGHT + 1) * x).collect(),
+    };
+
+    (0..NUM_CHUNKS).filter(|x| !excluded.contains(x)).collect()
+}
+
 #[tokio::test]
-async fn test_entangler_repair_scenarios() -> Result<()> {
-    //  0  5  .  5 20 25
-    //  1  .  .  . 21 26
-    //  .  .  .  .  . 27
-    //  3  .  .  . 23 28
-    //  4  9  . 19 24 29
-    fn get_chunk_island() -> Vec<u64> {
-        vec![2, 6, 7, 8, 10, 11, 12, 13, 14, 16, 17, 18, 22]
-    }
-
-    //  0  5  . 15 20 25  .  .  .  .
-    //  1  .  .  . 21 26  .  .  . 46
-    //  .  .  .  .  . 27  .  . 42 47
-    //  3  .  .  . 23 28 33 38 43  .
-    //  4  9  . 19 24 29 34 39 44  .
-    fn get_several_chunk_islands() -> Vec<u64> {
-        vec![
-            2, 6, 7, 8, 10, 11, 12, 13, 14, 16, 17, 18, 22, 30, 31, 32, 35, 36, 37, 40, 41, 45, 48,
-            49,
-        ]
-    }
-
-    fn get_all_chunks_but_strand_revolution(strand: StrandType) -> Vec<u64> {
-        let excluded: HashSet<_> = match strand {
-            //           20
-            //        16
-            //     12
-            //   8
-            // 4
-            StrandType::Left => (0..HEIGHT).map(|x| (HEIGHT - 1) * (x + 1)).collect(),
-            //
-            //
-            // 2 7 12 17 22 27 32 37 42 47
-            //
-            //
-            StrandType::Horizontal => (0..WIDTH).map(|x| x * HEIGHT + 2).collect(),
-            // 0
-            //   6
-            //     12
-            //        18
-            //           24
-            StrandType::Right => (0..HEIGHT).map(|x| (HEIGHT + 1) * x).collect(),
-        };
-
-        (0..NUM_CHUNKS).filter(|x| !excluded.contains(x)).collect()
-    }
-
+async fn test_download_blob_and_repair_scenarios() -> Result<()> {
     struct TestCase {
         name: &'static str,
         setup: fn(&FakeStorage, &Metadata),
@@ -536,6 +535,203 @@ async fn test_entangler_repair_scenarios() -> Result<()> {
                     "expected download to fail for case: {}",
                     case.name
                 );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_download_chunks_range_and_repair_scenarios() -> Result<()> {
+    struct Req {
+        name: &'static str,
+        range: ChunkRange,
+    }
+    struct TestCase {
+        name: &'static str,
+        setup: fn(&FakeStorage, &Metadata),
+        requests: Vec<Req>,
+    }
+
+    let test_cases = vec![
+        TestCase {
+            name: "1 chunk is missing and only L strand is available",
+            setup: |st, metadata| {
+                st.fake_failed_chunks(&metadata.orig_hash, vec![12]);
+
+                make_parity_unavailable(st, metadata, StrandType::Right);
+                make_parity_unavailable(st, metadata, StrandType::Horizontal);
+            },
+            requests: vec![
+                Req {
+                    name: "starting before and ending after the missing chunk",
+                    range: ChunkRange::Between(11, 13),
+                },
+                Req {
+                    name: "starting and ending at the missing chunk",
+                    range: ChunkRange::Between(12, 12),
+                },
+                Req {
+                    name: "starting at the missing chunk and ending after",
+                    range: ChunkRange::Between(12, 14),
+                },
+                Req {
+                    name: "starting before the missing chunk and ending at it",
+                    range: ChunkRange::Between(11, 12),
+                },
+                Req {
+                    name: "between range outside the missing chunk",
+                    range: ChunkRange::Between(20, 40),
+                },
+                Req {
+                    name: "range till after the missing chunk",
+                    range: ChunkRange::Till(13),
+                },
+                Req {
+                    name: "range till before the missing chunk",
+                    range: ChunkRange::Till(10),
+                },
+                Req {
+                    name: "range from before the missing chunk",
+                    range: ChunkRange::From(11),
+                },
+                Req {
+                    name: "range from after the missing chunk",
+                    range: ChunkRange::From(13),
+                },
+            ],
+        },
+        TestCase {
+            name: "a chunk column is missing and only horizontal strand is available",
+            setup: |st, metadata| {
+                st.fake_failed_chunks(&metadata.orig_hash, (10..10 + HEIGHT).collect());
+
+                make_parity_unavailable(st, metadata, StrandType::Left);
+                make_parity_unavailable(st, metadata, StrandType::Right);
+            },
+            requests: vec![
+                Req {
+                    name: "range within column",
+                    range: ChunkRange::Between(11, 13),
+                },
+                Req {
+                    name: "range enclosing column",
+                    range: ChunkRange::Between(8, 16),
+                },
+                Req {
+                    name: "range till middle of column",
+                    range: ChunkRange::Till(12),
+                },
+                Req {
+                    name: "range from middle of column",
+                    range: ChunkRange::From(12),
+                },
+            ],
+        },
+        TestCase {
+            name: "a horizontal stripe of chunks is missing and only R strand is available",
+            setup: |st, metadata| {
+                st.fake_failed_chunks(
+                    &metadata.orig_hash,
+                    vec![12, 13, 17, 18, 22, 23, 27, 28, 32, 33],
+                );
+
+                make_parity_unavailable(st, metadata, StrandType::Left);
+                make_parity_unavailable(st, metadata, StrandType::Horizontal);
+            },
+            requests: vec![
+                Req {
+                    name: "range starting and ending on the missing stripe",
+                    range: ChunkRange::Between(17, 28),
+                },
+                Req {
+                    name: "range enclosing column",
+                    range: ChunkRange::Between(10, 35),
+                },
+                Req {
+                    name: "range till middle of the stripe",
+                    range: ChunkRange::Till(23),
+                },
+                Req {
+                    name: "range from middle of column",
+                    range: ChunkRange::From(22),
+                },
+            ],
+        },
+    ];
+
+    for case in test_cases {
+        for req in &case.requests {
+            for download_method in ["range", "chunks"] {
+                println!(
+                    "Running test case: {}, {}. Download method: {}",
+                    case.name, req.name, download_method
+                );
+
+                let mock_storage = FakeStorage::new();
+                let ent = Entangler::new(mock_storage.clone(), 3, HEIGHT as u8, HEIGHT as u8)?;
+
+                let bytes = create_bytes(NUM_CHUNKS);
+
+                let hashes = ent.upload(bytes.clone()).await?;
+                let metadata = load_metadata(&hashes.1, &mock_storage).await?;
+
+                mock_storage.fake_failed_download(&metadata.orig_hash);
+
+                (case.setup)(&mock_storage, &metadata);
+
+                let (first, last) = match req.range {
+                    ChunkRange::From(first) => (first, NUM_CHUNKS - 1),
+                    ChunkRange::Till(last) => (0, last),
+                    ChunkRange::Between(first, last) => (first, last),
+                };
+
+                if download_method == "range" {
+                    let result = ent
+                        .download_range(&hashes.0, req.range, Some(&hashes.1))
+                        .await;
+                    assert!(
+                        result.is_ok(),
+                        "expected download_range to succeed for case: {}, {}, but got: {:?}",
+                        case.name,
+                        req.name,
+                        result.err().unwrap(),
+                    );
+                    let downloaded_bytes = result?;
+                    let expected_bytes = bytes
+                        .slice((first * CHUNK_SIZE) as usize..((last + 1) * CHUNK_SIZE) as usize);
+                    assert_eq!(
+                        downloaded_bytes, expected_bytes,
+                        "downloaded data mismatch for case: {}",
+                        case.name
+                    );
+                } else {
+                    let mapper = mock_storage.chunk_id_mapper(&hashes.0).await?;
+                    let chunks = (first..=last)
+                        .map(|i| mapper.index_to_id(i).unwrap())
+                        .collect();
+                    let result = ent
+                        .download_chunks(&hashes.0, chunks, Some(&hashes.1))
+                        .await;
+                    assert!(
+                        result.is_ok(),
+                        "expected download_chunks to succeed for case: {}, {}",
+                        case.name,
+                        req.name,
+                    );
+                    let downloaded_chunks = result?;
+                    for i in first..=last {
+                        let id = mapper.index_to_id(i).unwrap();
+                        assert_eq!(
+                            downloaded_chunks[&id],
+                            &bytes[(i * CHUNK_SIZE) as usize..((i + 1) * CHUNK_SIZE) as usize],
+                            "downloaded chunk mismatch for case: {}, {}",
+                            case.name,
+                            req.name
+                        );
+                    }
+                }
             }
         }
     }

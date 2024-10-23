@@ -59,9 +59,15 @@ pub struct Entangler<T: Storage> {
     s: u8,
 }
 
+/// Represents a range of chunks to download.
+/// For variants `From` and `Till`, the range is inclusive.
+#[derive(Debug, Copy, Clone)]
 pub enum ChunkRange {
+    /// Download chunks starting from the given index till the end.
     From(u64),
+    /// Download chunks starting from the beginning till the given index inclusive.
     Till(u64),
+    /// Download chunks between the given indices inclusive.
     Between(u64, u64),
 }
 
@@ -160,26 +166,26 @@ impl<T: Storage> Entangler<T> {
         chunk_range: ChunkRange,
         metadata_hash: Option<&str>,
     ) -> Result<Bytes, Error> {
-        let (first, last) = match chunk_range {
+        let (beg, end) = match chunk_range {
             ChunkRange::From(first) => (first, None),
-            ChunkRange::Till(last) => (0, Some(last)),
-            ChunkRange::Between(first, last) => (first, Some(last)),
+            ChunkRange::Till(last) => (0, Some(last + 1)),
+            ChunkRange::Between(first, last) => (first, Some(last + 1)),
         };
 
-        let mut index = first;
+        let mut index = beg;
         let mut chunk_ids = Vec::new();
-        let mapper = self.storage.chunk_id_mapper(hash);
+        let mapper = self.storage.chunk_id_mapper(hash).await?;
         while let Ok(chunk_id) = mapper.index_to_id(index) {
             chunk_ids.push(chunk_id);
-            if last.is_some() && index == last.unwrap() {
+            index += 1;
+            if end.is_some() && index == end.unwrap() {
                 break;
             }
-            index += 1;
         }
 
         let chunks = self.download_chunks(hash, chunk_ids, metadata_hash).await?;
         let mut buf = BytesMut::with_capacity(CHUNK_SIZE as usize * chunks.len());
-        for i in first..=index {
+        for i in beg..index {
             let id = mapper.index_to_id(i)?;
             buf.extend_from_slice(&chunks[&id]);
         }
@@ -226,11 +232,15 @@ impl<T: Storage> Entangler<T> {
 
         let metadata = self.download_metadata(metadata_hash.unwrap()).await?;
         let repaired_data = self
-            .repair_chunks(metadata, failed_chunks, self.storage.chunk_id_mapper(hash))
+            .repair_chunks(
+                metadata,
+                failed_chunks,
+                self.storage.chunk_id_mapper(hash).await?,
+            )
             .await?;
 
-        for (chunk_id, chunk) in &repaired_data {
-            chunks.insert(chunk_id.clone(), chunk.clone());
+        for (chunk_id, chunk) in repaired_data {
+            chunks.insert(chunk_id, chunk);
         }
 
         Ok(chunks)
@@ -284,7 +294,7 @@ impl<T: Storage> Entangler<T> {
     ) -> Result<(Vec<(T::ChunkId, Bytes)>, Vec<T::ChunkId>, T::ChunkIdMapper), Error> {
         let mut missing_indexes = Vec::new();
         let mut available_chunks = vec![(T::ChunkId::default(), Bytes::new()); num_chunks as usize];
-        let mapper = self.storage.chunk_id_mapper(hash);
+        let mapper = self.storage.chunk_id_mapper(hash).await?;
         while let Some((chunk_id, chunk_result)) = stream.next().await {
             let index = mapper
                 .id_to_index(&chunk_id)
@@ -374,8 +384,8 @@ mod tests {
             Ok("mock_hash".to_string())
         }
 
-        fn chunk_id_mapper(&self, _: &str) -> Self::ChunkIdMapper {
-            MockChunkIdMapper {}
+        async fn chunk_id_mapper(&self, _: &str) -> Result<Self::ChunkIdMapper, StorageError> {
+            Ok(MockChunkIdMapper {})
         }
 
         async fn download_bytes(&self, _: &str) -> Result<Bytes, StorageError> {

@@ -58,14 +58,31 @@ impl FakeStorage {
 }
 
 #[derive(Clone)]
-pub struct FakeChunkIdMapper {}
+pub struct FakeChunkIdMapper {
+    hash: String,
+    num_chunks: u64,
+}
 
 impl ChunkIdMapper<u64> for FakeChunkIdMapper {
     fn index_to_id(&self, index: u64) -> Result<u64, StorageError> {
+        if index >= self.num_chunks {
+            return Err(StorageError::ChunkNotFound(
+                index.to_string(),
+                self.hash.clone(),
+                anyhow::anyhow!("Chunk index out of bounds"),
+            ));
+        }
         Ok(index as u64)
     }
 
     fn id_to_index(&self, chunk_id: &u64) -> Result<u64, StorageError> {
+        if *chunk_id >= self.num_chunks {
+            return Err(StorageError::ChunkNotFound(
+                chunk_id.to_string(),
+                self.hash.clone(),
+                anyhow::anyhow!("Chunk id out of bounds"),
+            ));
+        }
         Ok(*chunk_id as u64)
     }
 }
@@ -97,8 +114,16 @@ impl Storage for FakeStorage {
         Ok(hash_str)
     }
 
-    fn chunk_id_mapper(&self, _: &str) -> FakeChunkIdMapper {
-        FakeChunkIdMapper {}
+    async fn chunk_id_mapper(&self, hash: &str) -> Result<FakeChunkIdMapper, StorageError> {
+        let num_chunks = match self.data.lock().unwrap().get(hash) {
+            Some(chunks) => chunks.len() as u64,
+            None => return Err(StorageError::BlobNotFound(hash.to_string())),
+        };
+
+        Ok(FakeChunkIdMapper {
+            hash: hash.to_string(),
+            num_chunks,
+        })
     }
 
     async fn download_bytes(&self, hash: &str) -> Result<Bytes, StorageError> {
@@ -393,13 +418,33 @@ mod tests {
             let result = storage.download_chunk(&hash, chunk_id).await;
             if chunk_id == fail_chunk_index {
                 assert!(
-                    matches!(result, Err(StorageError::ChunkNotFound(h, c_id, _)) if h == chunk_id.to_string() && c_id == hash),
+                    matches!(result.err().unwrap(), StorageError::ChunkNotFound(h, c_id, _) if h == chunk_id.to_string() && c_id == hash),
                 );
             } else {
                 assert!(result.is_ok());
             }
         }
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_chunk_id_mapper() -> Result<()> {
+        let storage = FakeStorage::new();
+        let data = vec![0u8; 3000]; // 3 chunks
+        let hash = storage.upload_bytes(data).await?;
+
+        let mapper = storage.chunk_id_mapper(&hash).await?;
+        assert_eq!(mapper.index_to_id(0)?, 0);
+        assert_eq!(mapper.index_to_id(1)?, 1);
+        assert_eq!(mapper.index_to_id(2)?, 2);
+        assert!(
+            matches!(mapper.id_to_index(&3), Err(StorageError::ChunkNotFound(c_id, h, _)) if c_id == "3" && h == hash),
+        );
+
+        let res = storage.chunk_id_mapper("invalid").await;
+        assert!(res.is_err(), "Expected error");
+        assert!(matches!(res.err().unwrap(), StorageError::BlobNotFound(h) if h == "invalid"));
         Ok(())
     }
 }
