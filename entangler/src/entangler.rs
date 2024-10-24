@@ -60,7 +60,7 @@ pub struct Entangler<T: Storage> {
 }
 
 /// Represents a range of chunks to download.
-/// For variants `From` and `Till`, the range is inclusive.
+/// All ranges are inclusive.
 #[derive(Debug, Copy, Clone)]
 pub enum ChunkRange {
     /// Download chunks starting from the given index till the end.
@@ -84,6 +84,8 @@ impl<T: Storage> Entangler<T> {
     /// # Returns
     ///
     /// A new `Entangler` instance.
+    ///
+    /// See also [storage]
     pub fn new(storage: T, alpha: u8, s: u8, p: u8) -> Result<Self, Error> {
         if alpha == 0 || s == 0 {
             return Err(Error::InvalidEntanglementParameter(
@@ -102,7 +104,6 @@ impl<T: Storage> Entangler<T> {
 
     /// Creates entangled parity blobs for the given data and uploads them to the storage backend.
     /// The original data is also uploaded to the storage backend.
-    /// Returns the hash of the original data and the hash of the metadata.
     ///
     /// # Arguments
     ///
@@ -156,7 +157,6 @@ impl<T: Storage> Entangler<T> {
 
     /// Entangles the uploaded data identified by the given hash, uploads entangled parity blobs
     /// to the storage backend, and returns the hash of the metadata. [Metadata]
-    /// Returns the hash of the metadata.
     ///
     /// # Arguments
     ///
@@ -172,7 +172,6 @@ impl<T: Storage> Entangler<T> {
 
     /// Downloads the data identified by the given hash. If the data is corrupted, it attempts to
     /// repair the data using the parity blobs identified by the metadata hash.
-    /// Returns the downloaded data.
     ///
     /// # Arguments
     ///
@@ -195,7 +194,7 @@ impl<T: Storage> Entangler<T> {
 
     /// Downloads a range of chunks of the data identified by the given hash. If the data is
     /// corrupted, it attempts to repair the data using the parity blobs identified by the metadata
-    /// hash. Returns the downloaded data.
+    /// hash.
     ///
     /// # Arguments
     ///
@@ -245,7 +244,7 @@ impl<T: Storage> Entangler<T> {
     // that the chunks fit into the memory.
     /// Downloads the chunks with specific ids of the data identified by the given hash. If the data
     /// is corrupted, it attempts to repair the data using the parity blobs identified by the
-    /// metadata hash. Returns a map of chunk ids to the downloaded data.
+    /// metadata hash.
     ///
     /// # Arguments
     ///
