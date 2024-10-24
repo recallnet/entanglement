@@ -31,8 +31,7 @@
 //! ### Example
 //!
 //! ```rust
-//! use entanglement_storage::storage::{Storage, ChunkIdMapper};
-//! use entanglement_storage::iroh::IrohStorage;
+//! use crate::storage::{Storage, ChunkIdMapper, iroh::IrohStorage};
 //! use bytes::Bytes;
 //! use futures::StreamExt;
 //!
