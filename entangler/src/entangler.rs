@@ -73,9 +73,17 @@ pub enum ChunkRange {
 
 impl<T: Storage> Entangler<T> {
     /// Creates a new `Entangler` instance with the given storage backend, alpha, s, and p parameters.
-    /// The alpha parameter determines the number of parity chunks to generate for each data chunk.
-    /// The s parameter determines the number of horizontal strands in the grid.
-    /// The p parameter determines the number of helical strands in the grid.
+    ///
+    /// # Arguments
+    ///
+    /// * `storage` - The storage backend to use.
+    /// * `alpha` - The number of parity chunks to generate for each data chunk.
+    /// * `s` - The number of horizontal strands in the grid.
+    /// * `p` - The number of helical strands in the grid.
+    ///
+    /// # Returns
+    ///
+    /// A new `Entangler` instance.
     pub fn new(storage: T, alpha: u8, s: u8, p: u8) -> Result<Self, Error> {
         if alpha == 0 || s == 0 {
             return Err(Error::InvalidEntanglementParameter(
@@ -95,6 +103,14 @@ impl<T: Storage> Entangler<T> {
     /// Creates entangled parity blobs for the given data and uploads them to the storage backend.
     /// The original data is also uploaded to the storage backend.
     /// Returns the hash of the original data and the hash of the metadata.
+    ///
+    /// # Arguments
+    ///
+    /// * `bytes` - The data to upload.
+    ///
+    /// # Returns
+    ///
+    /// The hash of the original data and the hash of the metadata.
     pub async fn upload(&self, bytes: impl Into<Bytes> + Send) -> Result<(String, String)> {
         let bytes: Bytes = bytes.into();
         let orig_hash = self.storage.upload_bytes(bytes.clone()).await?;
@@ -141,6 +157,14 @@ impl<T: Storage> Entangler<T> {
     /// Entangles the uploaded data identified by the given hash, uploads entangled parity blobs
     /// to the storage backend, and returns the hash of the metadata. [Metadata]
     /// Returns the hash of the metadata.
+    ///
+    /// # Arguments
+    ///
+    /// * `hash` - The hash of the data to entangle.
+    ///
+    /// # Returns
+    ///
+    /// The hash of the metadata.
     pub async fn entangle_uploaded(&self, hash: String) -> Result<String> {
         let orig_data = self.storage.download_bytes(&hash).await?;
         self.entangle(orig_data, hash).await
@@ -149,6 +173,15 @@ impl<T: Storage> Entangler<T> {
     /// Downloads the data identified by the given hash. If the data is corrupted, it attempts to
     /// repair the data using the parity blobs identified by the metadata hash.
     /// Returns the downloaded data.
+    ///
+    /// # Arguments
+    ///
+    /// * `hash` - The hash of the data to download.
+    /// * `metadata_hash` - The hash of the metadata.
+    ///
+    /// # Returns
+    ///
+    /// The downloaded data.
     pub async fn download(&self, hash: &str, metadata_hash: Option<&str>) -> Result<Bytes, Error> {
         match (self.storage.download_bytes(hash).await, metadata_hash) {
             (Ok(data), _) => Ok(data),
@@ -160,6 +193,21 @@ impl<T: Storage> Entangler<T> {
         }
     }
 
+    /// Downloads a range of chunks of the data identified by the given hash. If the data is
+    /// corrupted, it attempts to repair the data using the parity blobs identified by the metadata
+    /// hash. Returns the downloaded data.
+    ///
+    /// # Arguments
+    ///
+    /// * `hash` - The hash of the data to download.
+    /// * `chunk_range` - The range of chunks to download.
+    /// * `metadata_hash` - The hash of the metadata.
+    ///
+    /// # Returns
+    ///
+    /// The downloaded data.
+    ///
+    /// See [ChunkRange] for more information on the range of chunks.
     pub async fn download_range(
         &self,
         hash: &str,
@@ -195,6 +243,23 @@ impl<T: Storage> Entangler<T> {
 
     // TODO: this should have a documentation saying that it's up to the caller to ensure that
     // that the chunks fit into the memory.
+    /// Downloads the chunks with specific ids of the data identified by the given hash. If the data
+    /// is corrupted, it attempts to repair the data using the parity blobs identified by the
+    /// metadata hash. Returns a map of chunk ids to the downloaded data.
+    ///
+    /// # Arguments
+    ///
+    /// * `hash` - The hash of the data to download.
+    /// * `chunk_ids` - The ids of the chunks to download.
+    /// * `metadata_hash` - The hash of the metadata.
+    ///
+    /// # Returns
+    ///
+    /// A map of chunk ids to the downloaded data.
+    ///
+    /// # Note
+    ///
+    /// The caller is responsible for ensuring that the chunks fit into the memory.
     pub async fn download_chunks(
         &self,
         hash: &str,
