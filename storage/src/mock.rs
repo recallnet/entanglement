@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::storage::{ByteStream, Error as StorageError, Storage};
+use crate::storage::{ByteStream, ChunkIdMapper, Error as StorageError, Storage};
 
 const CHUNK_SIZE: usize = 1024;
 
@@ -21,7 +21,7 @@ const CHUNK_SIZE: usize = 1024;
 #[derive(Clone)]
 pub struct FakeStorage {
     data: Arc<Mutex<HashMap<String, Vec<Bytes>>>>,
-    fail_chunks: Arc<Mutex<HashMap<String, Vec<usize>>>>,
+    fail_chunks: Arc<Mutex<HashMap<String, Vec<u64>>>>,
     fail_blobs: Arc<Mutex<HashMap<String, bool>>>,
 }
 
@@ -41,7 +41,7 @@ impl FakeStorage {
     }
 
     /// Simulate a failure for a specific chunk of a blob.
-    pub fn fake_failed_chunks(&self, hash: &str, chunks: Vec<usize>) {
+    pub fn fake_failed_chunks(&self, hash: &str, chunks: Vec<u64>) {
         self.fail_chunks
             .lock()
             .unwrap()
@@ -57,9 +57,40 @@ impl FakeStorage {
     }
 }
 
+#[derive(Clone)]
+pub struct FakeChunkIdMapper {
+    hash: String,
+    num_chunks: u64,
+}
+
+impl ChunkIdMapper<u64> for FakeChunkIdMapper {
+    fn index_to_id(&self, index: u64) -> Result<u64, StorageError> {
+        if index >= self.num_chunks {
+            return Err(StorageError::ChunkNotFound(
+                index.to_string(),
+                self.hash.clone(),
+                anyhow::anyhow!("Chunk index out of bounds"),
+            ));
+        }
+        Ok(index)
+    }
+
+    fn id_to_index(&self, chunk_id: &u64) -> Result<u64, StorageError> {
+        if *chunk_id >= self.num_chunks {
+            return Err(StorageError::ChunkNotFound(
+                chunk_id.to_string(),
+                self.hash.clone(),
+                anyhow::anyhow!("Chunk id out of bounds"),
+            ));
+        }
+        Ok(*chunk_id)
+    }
+}
+
 #[async_trait]
 impl Storage for FakeStorage {
-    type ChunkId = usize;
+    type ChunkId = u64;
+    type ChunkIdMapper = FakeChunkIdMapper;
 
     async fn upload_bytes(&self, bytes: impl Into<Bytes> + Send) -> Result<String> {
         let bytes = bytes.into();
@@ -83,6 +114,18 @@ impl Storage for FakeStorage {
         Ok(hash_str)
     }
 
+    async fn chunk_id_mapper(&self, hash: &str) -> Result<FakeChunkIdMapper, StorageError> {
+        let num_chunks = match self.data.lock().unwrap().get(hash) {
+            Some(chunks) => chunks.len() as u64,
+            None => return Err(StorageError::BlobNotFound(hash.to_string())),
+        };
+
+        Ok(FakeChunkIdMapper {
+            hash: hash.to_string(),
+            num_chunks,
+        })
+    }
+
     async fn download_bytes(&self, hash: &str) -> Result<Bytes, StorageError> {
         if self.fail_blobs.lock().unwrap().get(hash).is_some() {
             return Err(StorageError::BlobNotFound(hash.to_string()));
@@ -95,7 +138,7 @@ impl Storage for FakeStorage {
             .ok_or_else(|| StorageError::BlobNotFound(hash.to_string()))
     }
 
-    async fn iter_chunks(&self, hash: &str) -> Result<ByteStream<Self::ChunkId>, StorageError> {
+    async fn iter_chunks(&self, hash: &str) -> Result<ByteStream<u64>, StorageError> {
         let chunks = self
             .data
             .lock()
@@ -113,6 +156,7 @@ impl Storage for FakeStorage {
             .unwrap_or_default();
 
         let stream = stream::iter(chunks.into_iter().enumerate().map(move |(index, chunk)| {
+            let index = index as u64;
             if fail_chunks.contains(&index) {
                 (index, Err(anyhow::anyhow!("Simulated chunk failure")))
             } else {
@@ -123,11 +167,7 @@ impl Storage for FakeStorage {
         Ok(Box::pin(stream))
     }
 
-    async fn download_chunk(
-        &self,
-        hash: &str,
-        chunk_id: Self::ChunkId,
-    ) -> Result<Bytes, StorageError> {
+    async fn download_chunk(&self, hash: &str, chunk_id: u64) -> Result<Bytes, StorageError> {
         let fail_chunks = self
             .fail_chunks
             .lock()
@@ -147,7 +187,7 @@ impl Storage for FakeStorage {
         let data = self.data.lock().unwrap();
         let chunks = data.get(hash);
         if let Some(chunks) = chunks {
-            if chunk_id >= chunks.len() {
+            if chunk_id >= chunks.len() as u64 {
                 return Err(StorageError::ChunkNotFound(
                     chunk_id.to_string(),
                     hash.to_string(),
@@ -156,7 +196,7 @@ impl Storage for FakeStorage {
             }
         }
         chunks
-            .map(|chunks| chunks[chunk_id].clone())
+            .map(|chunks| chunks[chunk_id as usize].clone())
             .ok_or_else(|| StorageError::BlobNotFound(hash.to_string()))
     }
 }
@@ -262,7 +302,7 @@ mod tests {
         assert_eq!(chunk_results.len(), 3, "Expected 3 chunk results");
 
         for (index, (_, result)) in chunk_results.iter().enumerate() {
-            if index == fail_chunk_index {
+            if index == fail_chunk_index as usize {
                 assert!(result.is_err(), "Expected chunk {} to fail", index);
                 assert!(
                     matches!(result, Err(e) if e.to_string() == "Simulated chunk failure"),
@@ -335,7 +375,7 @@ mod tests {
 
         for chunk_id in 0..3 {
             let chunk = storage.download_chunk(&hash, chunk_id).await?;
-            let b = chunk_id * CHUNK_SIZE;
+            let b = chunk_id as usize * CHUNK_SIZE;
             let e = (b + CHUNK_SIZE).min(data.len());
             let expected_chunk = &data[b..e];
             assert_eq!(chunk, expected_chunk);
@@ -378,13 +418,33 @@ mod tests {
             let result = storage.download_chunk(&hash, chunk_id).await;
             if chunk_id == fail_chunk_index {
                 assert!(
-                    matches!(result, Err(StorageError::ChunkNotFound(h, c_id, _)) if h == chunk_id.to_string() && c_id == hash),
+                    matches!(result.err().unwrap(), StorageError::ChunkNotFound(h, c_id, _) if h == chunk_id.to_string() && c_id == hash),
                 );
             } else {
                 assert!(result.is_ok());
             }
         }
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_chunk_id_mapper() -> Result<()> {
+        let storage = FakeStorage::new();
+        let data = vec![0u8; 3000]; // 3 chunks
+        let hash = storage.upload_bytes(data).await?;
+
+        let mapper = storage.chunk_id_mapper(&hash).await?;
+        assert_eq!(mapper.index_to_id(0)?, 0);
+        assert_eq!(mapper.index_to_id(1)?, 1);
+        assert_eq!(mapper.index_to_id(2)?, 2);
+        assert!(
+            matches!(mapper.id_to_index(&3), Err(StorageError::ChunkNotFound(c_id, h, _)) if c_id == "3" && h == hash),
+        );
+
+        let res = storage.chunk_id_mapper("invalid").await;
+        assert!(res.is_err(), "Expected error");
+        assert!(matches!(res.err().unwrap(), StorageError::BlobNotFound(h) if h == "invalid"));
         Ok(())
     }
 }

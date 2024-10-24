@@ -7,9 +7,9 @@ use bytes::Bytes;
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("Invalid height: {0}")]
-    InvalidHeight(usize),
+    InvalidHeight(u64),
     #[error("Can not create grid with height {1} out of {0} items")]
-    InvalidNumItems(usize, usize),
+    InvalidNumItems(u64, u64),
 }
 
 /// Direction enum for moving around the grid.
@@ -89,7 +89,7 @@ impl Pos {
     }
 
     /// Returns the position at a given distance in the given direction.
-    pub fn near(&self, dir: Dir, distance: usize) -> Pos {
+    pub fn near(&self, dir: Dir, distance: u64) -> Pos {
         let (dx, dy) = dir.to_i64();
         Pos {
             x: self.x + dx * distance as i64,
@@ -160,13 +160,13 @@ impl Pos {
 ///      the first column.
 #[derive(Debug, Clone, Copy)]
 pub struct Positioner {
-    pub(crate) height: usize,
-    num_items: usize,
-    lw_aligned_width: usize,
+    pub(crate) height: u64,
+    pub(crate) num_items: u64,
+    lw_aligned_width: u64,
 }
 
 impl Positioner {
-    pub fn new(height: usize, num_items: usize) -> Self {
+    pub fn new(height: u64, num_items: u64) -> Self {
         let lw_aligned_width = Self::calculate_lw_aligned_width(num_items, height);
         Self {
             height,
@@ -175,7 +175,7 @@ impl Positioner {
         }
     }
 
-    fn calculate_lw_aligned_width(num_items: usize, height: usize) -> usize {
+    fn calculate_lw_aligned_width(num_items: u64, height: u64) -> u64 {
         let lw = height * height;
         ((num_items + lw - 1) / lw) * height
     }
@@ -185,12 +185,20 @@ impl Positioner {
         Pos::new(self.mod_x(pos.x) as i64, self.mod_y(pos.y) as i64)
     }
 
-    fn mod_x(&self, x: i64) -> usize {
+    fn mod_x(&self, x: i64) -> u64 {
         mod_int(x, self.lw_aligned_width)
     }
 
-    fn mod_y(&self, y: i64) -> usize {
+    fn mod_y(&self, y: i64) -> u64 {
         mod_int(y, self.height)
+    }
+
+    pub fn pos_to_index(&self, pos: Pos) -> u64 {
+        self.mod_x(pos.x) * self.height + self.mod_y(pos.y)
+    }
+
+    pub fn index_to_pos(&self, index: u64) -> Pos {
+        Pos::new(index / self.height, index % self.height)
     }
 
     /// Returns true if the given position is available. Even is a position is normalized it might
@@ -198,7 +206,7 @@ impl Positioner {
     /// grid.
     pub fn is_pos_available(&self, pos: Pos) -> bool {
         let normalized = self.normalize(pos);
-        (normalized.x as usize * self.height + normalized.y as usize) < self.num_items
+        (normalized.x as u64 * self.height + normalized.y as u64) < self.num_items
     }
 
     /// Returns a direction from one position to another taking in to account potentially
@@ -229,9 +237,9 @@ impl Positioner {
     }
 }
 
-fn mod_int(int: i64, m: usize) -> usize {
+fn mod_int(int: i64, m: u64) -> u64 {
     let w = m as i64;
-    ((int % w + w) % w) as usize
+    ((int % w + w) % w) as u64
 }
 
 /// Grid represents a 2D grid of chunks arranged in column-first order.
@@ -254,8 +262,8 @@ pub struct Grid {
 }
 
 impl Grid {
-    pub fn new(data: Vec<Bytes>, height: usize) -> Result<Self, Error> {
-        let num_items = data.len();
+    pub fn new(data: Vec<Bytes>, height: u64) -> Result<Self, Error> {
+        let num_items = data.len() as u64;
         Ok(Self {
             data: build_column_first_grid(data, height)?,
             positioner: Positioner::new(height, num_items),
@@ -263,7 +271,7 @@ impl Grid {
     }
 
     /// Creates a new empty grid for `num_items` items arranged in `height`-sized columns.
-    pub fn new_empty(num_items: usize, height: usize) -> Result<Self, Error> {
+    pub fn new_empty(num_items: u64, height: u64) -> Result<Self, Error> {
         if height == 0 {
             return Err(Error::InvalidHeight(height));
         }
@@ -272,23 +280,15 @@ impl Grid {
         }
 
         let num_cols = (num_items + height - 1) / height;
-        let mut grid: Vec<Vec<Bytes>> = Vec::with_capacity(num_cols);
+        let mut grid: Vec<Vec<Bytes>> = Vec::with_capacity(num_cols as usize);
         for _ in 0..num_cols {
-            grid.push(vec![Bytes::new(); height]);
+            grid.push(vec![Bytes::new(); height as usize]);
         }
 
         Ok(Self {
             data: grid,
             positioner: Positioner::new(height, num_items),
         })
-    }
-
-    /// Converts item index into a position
-    pub fn index_to_pos(&self, index: usize) -> Pos {
-        Pos {
-            x: (index / self.get_height()) as i64,
-            y: (index % self.get_height()) as i64,
-        }
     }
 
     /// Sets the value of a cell at the given position.
@@ -316,13 +316,13 @@ impl Grid {
     }
 
     /// Returns the width of the grid, i.e., the number of actual columns.
-    pub fn get_width(&self) -> usize {
-        self.data.len()
+    pub fn get_width(&self) -> u64 {
+        self.data.len() as u64
     }
 
     /// Returns the height of the grid, i.e., the number of rows in each column.
-    pub fn get_height(&self) -> usize {
-        self.data.first().map_or(0, |col| col.len())
+    pub fn get_height(&self) -> u64 {
+        self.data.first().map_or(0, |col| col.len() as u64)
     }
 
     /// Returns true if cell at the given position exists. Can be used before calling
@@ -343,26 +343,30 @@ impl Grid {
     }
 
     /// Returns a number of items the grid deals with.
-    pub fn get_num_items(&self) -> usize {
+    pub fn get_num_items(&self) -> u64 {
         self.positioner.num_items
+    }
+
+    pub fn get_positioner(&self) -> &Positioner {
+        &self.positioner
     }
 }
 
-fn build_column_first_grid(data: Vec<Bytes>, height: usize) -> Result<Vec<Vec<Bytes>>, Error> {
+fn build_column_first_grid(data: Vec<Bytes>, height: u64) -> Result<Vec<Vec<Bytes>>, Error> {
     if height == 0 {
         return Err(Error::InvalidHeight(height));
     }
-    if data.len() < height {
-        return Err(Error::InvalidNumItems(data.len(), height));
+    if data.len() < height as usize {
+        return Err(Error::InvalidNumItems(data.len() as u64, height));
     }
 
-    let num_cols = (data.len() + height - 1) / height;
-    let mut grid: Vec<Vec<Bytes>> = Vec::with_capacity(num_cols);
+    let num_cols = (data.len() as u64 + height - 1) / height;
+    let mut grid: Vec<Vec<Bytes>> = Vec::with_capacity(num_cols as usize);
     for _ in 0..num_cols {
-        grid.push(Vec::with_capacity(height));
+        grid.push(Vec::with_capacity(height as usize));
     }
     for (i, datum) in data.into_iter().enumerate() {
-        grid[i / height].push(datum);
+        grid[i / height as usize].push(datum);
     }
 
     Ok(grid)

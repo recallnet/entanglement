@@ -1,11 +1,11 @@
 // Copyright 2024 Entanglement Contributors
 // SPDX-License-Identifier: Apache-2.0, MIT
 
-use crate::grid::{Dir, Grid, Pos, Positioner};
+use crate::grid::{Dir, Pos, Positioner};
 use crate::lattice::{Graph, NodeId, NodeType};
 use crate::parity::StrandType;
 use anyhow::Result;
-use storage::{Error as StorageError, Storage};
+use storage::{ChunkIdMapper, Error as StorageError, Storage};
 
 use crate::Metadata;
 use bytes::Bytes;
@@ -27,12 +27,11 @@ pub enum Error {
 /// It build a so called sick graph out of known sick nodes and traverses all the nodes in
 /// the sick graph looking for healthy neighbors to repair the sick nodes.
 /// All found healthy nodes are stored in the healthy graph.
-pub struct Repairer<'a, 'b, T: Storage> {
+pub struct Repairer<'a, S: Storage> {
     metadata: Metadata,
-    storage: &'a T,
-    grid: &'b mut Grid,
-    pos_to_id_map: HashMap<Pos, T::ChunkId>,
-    id_to_pos_map: HashMap<T::ChunkId, Pos>,
+    storage: &'a S,
+    positioner: Positioner,
+    mapper: S::ChunkIdMapper,
 }
 
 fn xor_chunks(chunk1: &Bytes, chunk2: &Bytes) -> Bytes {
@@ -43,40 +42,57 @@ fn xor_chunks(chunk1: &Bytes, chunk2: &Bytes) -> Bytes {
     Bytes::from(chunk)
 }
 
-impl<'a, 'b, T: Storage> Repairer<'a, 'b, T> {
+impl<'a, 'b, S: Storage> Repairer<'a, S> {
     pub fn new(
-        storage: &'a T,
-        grid: &'b mut Grid,
+        storage: &'a S,
+        positioner: Positioner,
         metadata: Metadata,
-        pos_to_id_map: HashMap<Pos, T::ChunkId>,
-        id_to_pos_map: HashMap<T::ChunkId, Pos>,
+        mapper: S::ChunkIdMapper,
     ) -> Self {
         Self {
             metadata,
             storage,
-            grid,
-            pos_to_id_map,
-            id_to_pos_map,
+            positioner,
+            mapper,
         }
     }
 
-    pub async fn repair_chunks(&mut self, chunks: Vec<T::ChunkId>) -> Result<(), Error> {
+    pub async fn repair_chunks(
+        &mut self,
+        chunks: Vec<S::ChunkId>,
+    ) -> Result<HashMap<S::ChunkId, Bytes>, Error> {
+        let sick_nodes: Result<Vec<_>, _> = chunks
+            .into_iter()
+            .map(|c| self.mapper.id_to_index(&c))
+            .collect();
+        let sick_nodes = sick_nodes?;
+        let sick_nodes = sick_nodes
+            .into_iter()
+            .map(|index| self.positioner.index_to_pos(index))
+            .collect();
+
         let mut healer = Healer::new(
             self.storage.clone(),
             self.metadata.clone(),
-            chunks.into_iter().map(|c| self.id_to_pos_map[&c]).collect(),
-            self.grid.get_height(),
-            self.grid.get_num_items(),
-            self.pos_to_id_map.to_owned(),
+            sick_nodes,
+            self.positioner.height,
+            self.positioner.num_items,
+            self.mapper.clone(),
         );
 
         let healthy_chunks = healer.heal().await?;
 
-        for (pos, chunk) in healthy_chunks {
-            self.grid.set_cell(pos, chunk);
-        }
-
-        Ok(())
+        Ok(healthy_chunks
+            .into_iter()
+            .map(|(pos, chunk)| {
+                (
+                    self.mapper
+                        .index_to_id(self.positioner.pos_to_index(pos))
+                        .unwrap(),
+                    chunk,
+                )
+            })
+            .collect())
     }
 }
 
@@ -89,7 +105,7 @@ struct Healer<T: Storage> {
     visited: HashSet<Pos>,
     positioner: Positioner,
     metadata: Metadata,
-    pos_to_id_map: HashMap<Pos, T::ChunkId>,
+    mapper: T::ChunkIdMapper,
     /// Stack of nodes to visit. Each element is a tuple of a node and a list of directions to process.
     /// It is used to perform depth-first traversal of the graph while keeping the traversal state
     /// on the heap. It also helps to avoid recursion.
@@ -102,9 +118,9 @@ impl<T: Storage> Healer<T> {
         storage: T,
         metadata: Metadata,
         sick_nodes: Vec<Pos>,
-        grid_height: usize,
-        num_grid_items: usize,
-        pos_to_id_map: HashMap<Pos, T::ChunkId>,
+        grid_height: u64,
+        num_grid_items: u64,
+        mapper: T::ChunkIdMapper,
     ) -> Self {
         let mut sick_graph = Graph::new(grid_height, num_grid_items);
         let healthy_graph = Graph::new(grid_height, num_grid_items);
@@ -121,7 +137,7 @@ impl<T: Storage> Healer<T> {
             visited: HashSet::new(),
             positioner: Positioner::new(grid_height, num_grid_items),
             metadata,
-            pos_to_id_map,
+            mapper,
             stack: Vec::new(),
             result: HashMap::new(),
         }
@@ -299,7 +315,8 @@ impl<T: Storage> Healer<T> {
     }
 
     fn chunk_id_from_pos(&self, pos: Pos) -> T::ChunkId {
-        self.pos_to_id_map[&pos].clone()
+        let index = self.positioner.pos_to_index(pos);
+        self.mapper.index_to_id(index).unwrap()
     }
 
     fn get_blob_hash_for_type(&self, grid_type: NodeType) -> &str {
