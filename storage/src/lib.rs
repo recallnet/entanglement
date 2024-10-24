@@ -31,7 +31,7 @@
 //! ### Example
 //!
 //! ```rust
-//! use crate::storage::{Storage, ChunkIdMapper, iroh::IrohStorage};
+//! use crate::storage::{Storage, iroh::IrohStorage};
 //! use bytes::Bytes;
 //! use futures::StreamExt;
 //!
