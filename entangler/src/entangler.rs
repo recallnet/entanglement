@@ -335,7 +335,7 @@ impl<T: Storage> Entangler<T> {
                 )
                 .map_err(|e| Error::Other(e.into()))?;
 
-                let positioner = Positioner::new(height, num_chunks as u64);
+                let positioner = Positioner::new(height, num_chunks);
                 for (chunk_id, chunk) in rep_chunks {
                     let index = mapper.id_to_index(&chunk_id)?;
                     grid.set_cell(positioner.index_to_pos(index), chunk);
