@@ -143,7 +143,7 @@ impl<T: Storage> Entangler<T> {
             orig_hash: hash,
             parity_hashes,
             num_bytes: num_bytes as u64,
-            chunk_size: CHUNK_SIZE as u64,
+            chunk_size: CHUNK_SIZE,
             s: self.s,
             p: self.s,
         };
@@ -361,9 +361,7 @@ impl<T: Storage> Entangler<T> {
         let mut available_chunks = vec![(T::ChunkId::default(), Bytes::new()); num_chunks as usize];
         let mapper = self.storage.chunk_id_mapper(hash).await?;
         while let Some((chunk_id, chunk_result)) = stream.next().await {
-            let index = mapper
-                .id_to_index(&chunk_id)
-                .map_err(|e| Error::Storage(e))? as usize;
+            let index = mapper.id_to_index(&chunk_id).map_err(Error::Storage)? as usize;
             match chunk_result {
                 Ok(chunk) => available_chunks[index] = (chunk_id.clone(), chunk),
                 Err(_) => {
@@ -384,7 +382,7 @@ impl<T: Storage> Entangler<T> {
     ) -> std::result::Result<HashMap<T::ChunkId, Bytes>, Error> {
         let positioner = Positioner::new(
             metadata.s as u64,
-            ((metadata.num_bytes + metadata.chunk_size - 1) / metadata.chunk_size) as u64,
+            (metadata.num_bytes + metadata.chunk_size - 1) / metadata.chunk_size,
         );
         Repairer::new(&self.storage, positioner, metadata, mapper)
             .repair_chunks(missing_indexes.clone())
@@ -399,7 +397,7 @@ fn bytes_to_chunks(bytes: Bytes, chunk_size: u64) -> Vec<Bytes> {
     let mut start = 0;
 
     while start < bytes.len() {
-        let end = std::cmp::min(start + chunk_size as usize, bytes.len());
+        let end = std::cmp::min(start + chunk_size, bytes.len());
         chunks.push(bytes.slice(start..end));
         start = end;
     }
@@ -432,11 +430,11 @@ mod tests {
 
     impl ChunkIdMapper<u64> for MockChunkIdMapper {
         fn index_to_id(&self, index: u64) -> Result<u64, StorageError> {
-            Ok(index as u64)
+            Ok(index)
         }
 
         fn id_to_index(&self, chunk_id: &u64) -> Result<u64, StorageError> {
-            Ok(*chunk_id as u64)
+            Ok(*chunk_id)
         }
     }
 

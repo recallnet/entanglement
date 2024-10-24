@@ -72,7 +72,7 @@ impl ChunkIdMapper<u64> for FakeChunkIdMapper {
                 anyhow::anyhow!("Chunk index out of bounds"),
             ));
         }
-        Ok(index as u64)
+        Ok(index)
     }
 
     fn id_to_index(&self, chunk_id: &u64) -> Result<u64, StorageError> {
@@ -83,7 +83,7 @@ impl ChunkIdMapper<u64> for FakeChunkIdMapper {
                 anyhow::anyhow!("Chunk id out of bounds"),
             ));
         }
-        Ok(*chunk_id as u64)
+        Ok(*chunk_id)
     }
 }
 

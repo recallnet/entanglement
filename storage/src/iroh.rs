@@ -129,7 +129,7 @@ impl ChunkIdMapper<u64> for IrohChunkIdMapper {
                 anyhow::anyhow!("Chunk index out of bounds"),
             ));
         }
-        Ok(index as u64)
+        Ok(index)
     }
 
     fn id_to_index(&self, chunk_id: &u64) -> Result<u64, StorageError> {
@@ -140,7 +140,7 @@ impl ChunkIdMapper<u64> for IrohChunkIdMapper {
                 anyhow::anyhow!("Chunk id out of bounds"),
             ));
         }
-        Ok(*chunk_id as u64)
+        Ok(*chunk_id)
     }
 }
 
@@ -181,9 +181,9 @@ impl Storage for IrohStorage {
                 }
 
                 let remaining = total_size - offset;
-                let len = std::cmp::min(CHUNK_SIZE as u64, remaining);
+                let len = std::cmp::min(CHUNK_SIZE, remaining);
 
-                let chunk_id = offset as u64 / CHUNK_SIZE as u64;
+                let chunk_id = offset / CHUNK_SIZE;
                 Some(
                     match client
                         .read_at_to_bytes(hash, offset, ReadAtLen::Exact(len))
@@ -204,11 +204,11 @@ impl Storage for IrohStorage {
 
     async fn download_chunk(&self, hash: &str, chunk_id: u64) -> Result<Bytes, StorageError> {
         let hash = parse_hash(hash)?;
-        let offset = chunk_id as u64 * CHUNK_SIZE as u64;
+        let offset = chunk_id * CHUNK_SIZE;
 
         self.client()
             .blobs()
-            .read_at_to_bytes(hash, offset, ReadAtLen::AtMost(CHUNK_SIZE as u64))
+            .read_at_to_bytes(hash, offset, ReadAtLen::AtMost(CHUNK_SIZE))
             .await
             .map_err(|e| StorageError::ChunkNotFound(chunk_id.to_string(), hash.to_string(), e))
     }
