@@ -240,8 +240,6 @@ impl<T: Storage> Entangler<T> {
         Ok(buf.into())
     }
 
-    // TODO: this should have a documentation saying that it's up to the caller to ensure that
-    // that the chunks fit into the memory.
     /// Downloads the chunks with specific ids of the data identified by the given hash. If the data
     /// is corrupted, it attempts to repair the data using the parity blobs identified by the
     /// metadata hash.

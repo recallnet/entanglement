@@ -39,6 +39,9 @@ pub trait ChunkId: Clone + Default + PartialEq + Eq + std::hash::Hash + Display 
 pub type ByteStream<T> = Pin<Box<dyn Stream<Item = (T, Result<Bytes>)> + Send>>;
 
 /// Trait for mapping chunk indices to chunk ids and vice versa.
+///
+/// The methods in this trait can be called multiple times with the same arguments so
+/// the implementation should be idempotent and probably cache the results.
 pub trait ChunkIdMapper<T: ChunkId>: Clone {
     /// Returns a chunk id corresponding to the given index.
     fn index_to_id(&self, index: u64) -> Result<T, Error>;

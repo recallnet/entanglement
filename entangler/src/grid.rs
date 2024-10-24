@@ -197,7 +197,6 @@ impl Positioner {
         self.mod_x(pos.x) * self.height + self.mod_y(pos.y)
     }
 
-    /// Converts item index into a position
     pub fn index_to_pos(&self, index: u64) -> Pos {
         Pos::new(index / self.height, index % self.height)
     }
