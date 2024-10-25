@@ -21,14 +21,13 @@ impl Executer {
     }
 
     /// Executes the entanglement process on the given grid.
-    /// It creates `alpha` parity grids.
-    pub fn execute(&self, grid: grid::Grid) -> Result<Vec<ParityGrid>> {
-        let mut parity_grids = Vec::with_capacity(self.alpha as usize);
+    /// It produces `alpha` parity grids one by one.
+    pub fn iter_parities(&self, grid: grid::Grid) -> impl Iterator<Item = ParityGrid> {
         let strand_types = vec![StrandType::Left, StrandType::Horizontal, StrandType::Right];
-        for strand_type in strand_types.into_iter().take(self.alpha as usize) {
-            parity_grids.push(create_parity_grid(&grid, strand_type)?);
-        }
-        Ok(parity_grids)
+        strand_types
+            .into_iter()
+            .take(self.alpha as usize)
+            .map(move |strand_type| create_parity_grid(&grid, strand_type).unwrap())
     }
 }
 
@@ -152,7 +151,7 @@ mod tests {
         let grid = Grid::new(create_chunks(), 3).unwrap();
 
         let executer = Executer::new(3);
-        let parities = executer.execute(grid.clone()).unwrap();
+        let parities: Vec<_> = executer.iter_parities(grid.clone()).collect();
 
         assert_eq!(grid.get_cell(Pos::new(0, 0)), &Bytes::from("a"));
         assert_eq!(grid.get_cell(Pos::new(0, 1)), &Bytes::from("b"));
@@ -181,7 +180,7 @@ mod tests {
         let grid = Grid::new(create_chunks(), 4).unwrap();
 
         let executer = Executer::new(3);
-        let parities = executer.execute(grid.clone()).unwrap();
+        let parities: Vec<_> = executer.iter_parities(grid.clone()).collect();
 
         assert_eq!(grid.get_cell(Pos::new(0, 0)), &Bytes::from("a"));
         assert_eq!(grid.get_cell(Pos::new(0, 1)), &Bytes::from("b"));
@@ -263,7 +262,7 @@ mod tests {
         let grid = Grid::new(chunks.clone(), HEIGHT).unwrap();
 
         let executer = Executer::new(3);
-        let parities = executer.execute(grid.clone()).unwrap();
+        let parities: Vec<_> = executer.iter_parities(grid.clone()).collect();
 
         assert_eq!(parities.len() as u64, HEIGHT);
 
