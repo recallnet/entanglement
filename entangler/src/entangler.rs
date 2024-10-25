@@ -131,10 +131,9 @@ impl<T: Storage> Entangler<T> {
         let orig_grid = Grid::new(chunks, u64::min(self.s as u64, num_chunks))?;
 
         let exec = executer::Executer::new(self.alpha);
-        let parities = exec.execute(orig_grid)?;
 
         let mut parity_hashes = HashMap::new();
-        for parity_grid in parities {
+        for parity_grid in exec.iter_parities(orig_grid) {
             let data = parity_grid.grid.assemble_data();
             let parity_hash = self.storage.upload_bytes(data).await?;
             parity_hashes.insert(parity_grid.strand_type, parity_hash);
