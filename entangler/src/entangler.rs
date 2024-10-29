@@ -500,7 +500,7 @@ mod tests {
         let m_hash = "metadata_hash".to_string();
         let chunks = vec!["chunk0", "chunk1", "chunk2"];
 
-        let mut storage = SpyStorage::new();
+        let mut storage = SpyStorage::default();
         storage.stub_download_bytes(
             Some(hash.clone()),
             Err(StorageError::BlobNotFound(hash.clone())),

@@ -262,8 +262,8 @@ pub struct StubStorage {
     chunk_id_mapper_result: Result<DummyChunkIdMapper, StorageError>,
 }
 
-impl StubStorage {
-    pub fn new() -> Self {
+impl Default for StubStorage {
+    fn default() -> Self {
         Self {
             upload_bytes_result: Ok("dummy_hash".to_string()),
             download_bytes_result: HashMap::new(),
@@ -272,7 +272,9 @@ impl StubStorage {
             chunk_id_mapper_result: Ok(DummyChunkIdMapper {}),
         }
     }
+}
 
+impl StubStorage {
     pub fn stub_upload_bytes(&mut self, result: Result<String, StorageError>) {
         self.upload_bytes_result = result;
     }
@@ -369,10 +371,10 @@ impl std::ops::DerefMut for SpyStorage {
     }
 }
 
-impl SpyStorage {
-    pub fn new() -> Self {
+impl Default for SpyStorage {
+    fn default() -> Self {
         Self {
-            inner: StubStorage::new(),
+            inner: StubStorage::default(),
             upload_bytes_calls: Arc::new(RwLock::new(Vec::new())),
             download_bytes_calls: Arc::new(RwLock::new(Vec::new())),
             iter_chunks_calls: Arc::new(RwLock::new(Vec::new())),
@@ -380,7 +382,9 @@ impl SpyStorage {
             chunk_id_mapper_calls: Arc::new(RwLock::new(Vec::new())),
         }
     }
+}
 
+impl SpyStorage {
     pub fn upload_bytes_calls(&self) -> Vec<Bytes> {
         self.upload_bytes_calls.read().unwrap().clone()
     }
