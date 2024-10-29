@@ -11,7 +11,7 @@ use iroh::{blobs::Hash, client::Iroh as Client};
 use std::sync::Arc;
 use std::{path::Path, str::FromStr};
 
-use crate::storage::{ByteStream, ChunkId, ChunkIdMapper, Error as StorageError, Storage};
+use crate::storage::{self, ByteStream, ChunkId, ChunkIdMapper, Error as StorageError, Storage};
 
 const CHUNK_SIZE: u64 = 1024;
 
@@ -126,7 +126,7 @@ impl ChunkIdMapper<u64> for IrohChunkIdMapper {
             return Err(StorageError::ChunkNotFound(
                 index.to_string(),
                 self.hash.clone(),
-                anyhow::anyhow!("Chunk index out of bounds"),
+                storage::wrap_error(anyhow::anyhow!("Chunk index out of bounds")),
             ));
         }
         Ok(index)
@@ -137,7 +137,7 @@ impl ChunkIdMapper<u64> for IrohChunkIdMapper {
             return Err(StorageError::ChunkNotFound(
                 chunk_id.to_string(),
                 self.hash.clone(),
-                anyhow::anyhow!("Chunk id out of bounds"),
+                storage::wrap_error(anyhow::anyhow!("Chunk id out of bounds")),
             ));
         }
         Ok(*chunk_id)
@@ -149,14 +149,19 @@ impl Storage for IrohStorage {
     type ChunkId = u64;
     type ChunkIdMapper = IrohChunkIdMapper;
 
-    async fn upload_bytes(&self, bytes: impl Into<Bytes> + Send) -> Result<String> {
+    async fn upload_bytes(&self, bytes: impl Into<Bytes> + Send) -> Result<String, StorageError> {
         let blob = self.client().blobs().add_bytes(bytes).await.unwrap();
         Ok(blob.hash.to_string())
     }
 
     async fn download_bytes(&self, hash: &str) -> Result<Bytes, StorageError> {
         let hash = parse_hash(hash)?;
-        let res = self.client().blobs().read_to_bytes(hash).await?;
+        let res = self
+            .client()
+            .blobs()
+            .read_to_bytes(hash)
+            .await
+            .map_err(|e| StorageError::StorageError(storage::wrap_error(e)))?;
         Ok(res)
     }
 
@@ -168,10 +173,12 @@ impl Storage for IrohStorage {
             if err_str.contains("not found") {
                 return Err(StorageError::BlobNotFound(hash.to_string()));
             } else {
-                return Err(StorageError::StorageError(e));
+                return Err(StorageError::StorageError(storage::wrap_error(e)));
             }
         }
-        let total_size = reader?.size();
+        let total_size = reader
+            .map_err(|e| StorageError::StorageError(storage::wrap_error(e)))?
+            .size();
 
         let stream = stream::unfold(
             (self.client().blobs().clone(), 0u64),
@@ -210,7 +217,13 @@ impl Storage for IrohStorage {
             .blobs()
             .read_at_to_bytes(hash, offset, ReadAtLen::AtMost(CHUNK_SIZE))
             .await
-            .map_err(|e| StorageError::ChunkNotFound(chunk_id.to_string(), hash.to_string(), e))
+            .map_err(|e| {
+                StorageError::ChunkNotFound(
+                    chunk_id.to_string(),
+                    hash.to_string(),
+                    storage::wrap_error(e),
+                )
+            })
     }
 
     async fn chunk_id_mapper(&self, hash: &str) -> Result<IrohChunkIdMapper, StorageError> {

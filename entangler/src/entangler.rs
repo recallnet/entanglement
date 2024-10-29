@@ -320,7 +320,8 @@ impl<T: Storage> Entangler<T> {
 
         match self.storage.iter_chunks(hash).await {
             Ok(stream) => {
-                let num_chunks = (metadata.num_bytes + CHUNK_SIZE - 1) / CHUNK_SIZE;
+                let num_chunks =
+                    (metadata.num_bytes + metadata.chunk_size - 1) / metadata.chunk_size;
                 let height = metadata.s as u64;
                 let (available_chunks, missing_indexes, mapper) =
                     self.analyze_chunks(hash, stream, num_chunks).await?;
@@ -339,6 +340,8 @@ impl<T: Storage> Entangler<T> {
                     let index = mapper.id_to_index(&chunk_id)?;
                     grid.set_cell(positioner.index_to_pos(index), chunk);
                 }
+
+                self.storage.upload_bytes(grid.assemble_data()).await?;
                 Ok(grid.assemble_data())
             }
             Err(e) => Err(Error::Storage(e)),
@@ -415,63 +418,11 @@ fn add_padding(chunk: &Bytes, chunk_size: usize) -> Bytes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
-    use storage::ChunkIdMapper;
-
-    #[derive(Clone)]
-    struct MockStorage;
-
-    #[derive(Clone)]
-    pub struct MockChunkIdMapper {}
-
-    impl ChunkIdMapper<u64> for MockChunkIdMapper {
-        fn index_to_id(&self, index: u64) -> Result<u64, StorageError> {
-            Ok(index)
-        }
-
-        fn id_to_index(&self, chunk_id: &u64) -> Result<u64, StorageError> {
-            Ok(*chunk_id)
-        }
-    }
-
-    #[async_trait]
-    impl Storage for MockStorage {
-        type ChunkId = u64;
-        type ChunkIdMapper = MockChunkIdMapper;
-
-        async fn upload_bytes(&self, _: impl Into<Bytes> + Send) -> Result<String> {
-            Ok("mock_hash".to_string())
-        }
-
-        async fn chunk_id_mapper(&self, _: &str) -> Result<Self::ChunkIdMapper, StorageError> {
-            Ok(MockChunkIdMapper {})
-        }
-
-        async fn download_bytes(&self, _: &str) -> Result<Bytes, StorageError> {
-            Ok(Bytes::from("mock data"))
-        }
-
-        async fn iter_chunks(&self, _: &str) -> Result<ByteStream<Self::ChunkId>, StorageError> {
-            let chunks = vec![Bytes::from("mock data")];
-
-            let stream = futures::stream::iter(
-                chunks
-                    .into_iter()
-                    .enumerate()
-                    .map(move |(index, chunk)| (index as u64, Ok(chunk))),
-            );
-
-            Ok(Box::pin(stream))
-        }
-
-        async fn download_chunk(&self, _: &str, _: Self::ChunkId) -> Result<Bytes, StorageError> {
-            Ok(Bytes::from("mock data"))
-        }
-    }
+    use storage::{mock::DummyStorage, mock::SpyStorage};
 
     #[test]
     fn test_entangler_new_valid_parameters() {
-        let storage = MockStorage;
+        let storage = DummyStorage;
         let result = Entangler::new(storage, 3, 2, 4);
         assert!(result.is_ok());
         let entangler = result.unwrap();
@@ -481,7 +432,7 @@ mod tests {
 
     #[test]
     fn test_entangler_new_alpha_zero() {
-        let storage = MockStorage;
+        let storage = DummyStorage;
         let result = Entangler::new(storage, 0, 2, 4);
         assert!(result.is_err());
         assert!(matches!(
@@ -492,7 +443,7 @@ mod tests {
 
     #[test]
     fn test_entangler_new_s_zero() {
-        let storage = MockStorage;
+        let storage = DummyStorage;
         let result = Entangler::new(storage, 3, 0, 4);
         assert!(result.is_err());
         assert!(matches!(
@@ -503,7 +454,7 @@ mod tests {
 
     #[test]
     fn test_entangler_new_p_less_than_s() {
-        let storage = MockStorage;
+        let storage = DummyStorage;
         let result = Entangler::new(storage, 3, 4, 2);
         assert!(result.is_err());
         assert!(matches!(
@@ -514,7 +465,7 @@ mod tests {
 
     #[test]
     fn test_entangler_new_p_not_multiple_of_s() {
-        let storage = MockStorage;
+        let storage = DummyStorage;
         let result = Entangler::new(storage, 3, 3, 7);
         assert!(result.is_err());
         assert!(matches!(
@@ -525,7 +476,7 @@ mod tests {
 
     #[test]
     fn test_entangler_new_p_zero() {
-        let storage = MockStorage;
+        let storage = DummyStorage;
         let result = Entangler::new(storage, 3, 2, 0);
         assert!(result.is_ok());
         let entangler = result.unwrap();
@@ -535,11 +486,60 @@ mod tests {
 
     #[test]
     fn test_entangler_new_p_valid_multiple_of_s() {
-        let storage = MockStorage;
+        let storage = DummyStorage;
         let result = Entangler::new(storage, 3, 2, 6);
         assert!(result.is_ok());
         let entangler = result.unwrap();
         assert_eq!(entangler.alpha, 3);
         assert_eq!(entangler.s, 2);
+    }
+
+    #[tokio::test]
+    async fn test_if_download_fails_it_should_upload_to_storage_after_repair() {
+        let hash = "hash".to_string();
+        let m_hash = "metadata_hash".to_string();
+        let chunks = vec!["chunk0", "chunk1", "chunk2"];
+
+        let mut storage = SpyStorage::new();
+        storage.stub_download_bytes(
+            Some(hash.clone()),
+            Err(StorageError::BlobNotFound(hash.clone())),
+        );
+        storage.stub_iter_chunks(
+            chunks
+                .iter()
+                .enumerate()
+                .map(|(i, chunk)| (i as u64, Ok(Bytes::from(*chunk))))
+                .collect(),
+        );
+
+        let metadata = Metadata {
+            orig_hash: hash.clone(),
+            parity_hashes: HashMap::new(),
+            num_bytes: 18,
+            chunk_size: 6,
+            s: 3,
+            p: 3,
+        };
+        let json = serde_json::json!(metadata).to_string();
+        storage.stub_download_bytes(Some(m_hash.clone()), Ok(Bytes::from(json)));
+
+        let entangler = Entangler::new(storage.clone(), 3, 3, 3).unwrap();
+
+        let result = entangler.download(&hash, Some(&m_hash)).await;
+        assert!(result.is_ok());
+
+        let calls = storage.upload_bytes_calls();
+        assert_eq!(
+            calls.len(),
+            1,
+            "Expected 1 call to upload_bytes, got {:?}",
+            calls.len()
+        );
+        assert_eq!(
+            calls[0],
+            Bytes::from(chunks.into_iter().collect::<String>()),
+            "Unexpected data uploaded"
+        );
     }
 }

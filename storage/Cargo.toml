@@ -30,4 +30,5 @@ multihash = { version = "0.18.1" }
 sha2 = { version = "0.10.6" }
 
 [features]
+default = []
 mock = ["dep:multihash", "dep:sha2"]

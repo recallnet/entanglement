@@ -9,6 +9,7 @@ use futures::stream;
 use multihash::{Code, MultihashDigest};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::sync::RwLock;
 use std::sync::{Arc, Mutex};
 
 use crate::storage::{ByteStream, ChunkIdMapper, Error as StorageError, Storage};
@@ -69,7 +70,7 @@ impl ChunkIdMapper<u64> for FakeChunkIdMapper {
             return Err(StorageError::ChunkNotFound(
                 index.to_string(),
                 self.hash.clone(),
-                anyhow::anyhow!("Chunk index out of bounds"),
+                "Chunk index out of bounds".to_string(),
             ));
         }
         Ok(index)
@@ -80,7 +81,7 @@ impl ChunkIdMapper<u64> for FakeChunkIdMapper {
             return Err(StorageError::ChunkNotFound(
                 chunk_id.to_string(),
                 self.hash.clone(),
-                anyhow::anyhow!("Chunk id out of bounds"),
+                "Chunk id out of bounds".to_string(),
             ));
         }
         Ok(*chunk_id)
@@ -92,7 +93,7 @@ impl Storage for FakeStorage {
     type ChunkId = u64;
     type ChunkIdMapper = FakeChunkIdMapper;
 
-    async fn upload_bytes(&self, bytes: impl Into<Bytes> + Send) -> Result<String> {
+    async fn upload_bytes(&self, bytes: impl Into<Bytes> + Send) -> Result<String, StorageError> {
         let bytes = bytes.into();
 
         let mut hasher = Sha256::new();
@@ -138,7 +139,7 @@ impl Storage for FakeStorage {
             .ok_or_else(|| StorageError::BlobNotFound(hash.to_string()))
     }
 
-    async fn iter_chunks(&self, hash: &str) -> Result<ByteStream<u64>, StorageError> {
+    async fn iter_chunks(&self, hash: &str) -> Result<ByteStream<Self::ChunkId>, StorageError> {
         let chunks = self
             .data
             .lock()
@@ -156,7 +157,7 @@ impl Storage for FakeStorage {
             .unwrap_or_default();
 
         let stream = stream::iter(chunks.into_iter().enumerate().map(move |(index, chunk)| {
-            let index = index as u64;
+            let index = index as Self::ChunkId;
             if fail_chunks.contains(&index) {
                 (index, Err(anyhow::anyhow!("Simulated chunk failure")))
             } else {
@@ -180,7 +181,7 @@ impl Storage for FakeStorage {
             return Err(StorageError::ChunkNotFound(
                 chunk_id.to_string(),
                 hash.to_string(),
-                anyhow::anyhow!("Simulated chunk failure"),
+                "Simulated chunk failure".to_string(),
             ));
         }
 
@@ -191,13 +192,261 @@ impl Storage for FakeStorage {
                 return Err(StorageError::ChunkNotFound(
                     chunk_id.to_string(),
                     hash.to_string(),
-                    anyhow::anyhow!("Chunk not found"),
+                    "Chunk not found".to_string(),
                 ));
             }
         }
         chunks
             .map(|chunks| chunks[chunk_id as usize].clone())
             .ok_or_else(|| StorageError::BlobNotFound(hash.to_string()))
+    }
+}
+
+#[derive(Clone)]
+pub struct DummyStorage;
+
+#[derive(Clone)]
+pub struct DummyChunkIdMapper {}
+
+impl ChunkIdMapper<u64> for DummyChunkIdMapper {
+    fn index_to_id(&self, index: u64) -> Result<u64, StorageError> {
+        Ok(index)
+    }
+
+    fn id_to_index(&self, chunk_id: &u64) -> Result<u64, StorageError> {
+        Ok(*chunk_id)
+    }
+}
+
+#[async_trait]
+impl Storage for DummyStorage {
+    type ChunkId = u64;
+    type ChunkIdMapper = DummyChunkIdMapper;
+
+    async fn upload_bytes(&self, _: impl Into<Bytes> + Send) -> Result<String, StorageError> {
+        Ok("dummy_hash".to_string())
+    }
+
+    async fn chunk_id_mapper(&self, _: &str) -> Result<Self::ChunkIdMapper, StorageError> {
+        Ok(DummyChunkIdMapper {})
+    }
+
+    async fn download_bytes(&self, _: &str) -> Result<Bytes, StorageError> {
+        Ok(Bytes::from("dummy data"))
+    }
+
+    async fn iter_chunks(&self, _: &str) -> Result<ByteStream<Self::ChunkId>, StorageError> {
+        let chunks = vec![Bytes::from("dummy data")];
+
+        let stream = futures::stream::iter(
+            chunks
+                .into_iter()
+                .enumerate()
+                .map(move |(index, chunk)| (index as u64, Ok(chunk))),
+        );
+
+        Ok(Box::pin(stream))
+    }
+
+    async fn download_chunk(&self, _: &str, _: Self::ChunkId) -> Result<Bytes, StorageError> {
+        Ok(Bytes::from("dummy data"))
+    }
+}
+
+#[derive(Clone)]
+pub struct StubStorage {
+    upload_bytes_result: Result<String, StorageError>,
+    download_bytes_result: HashMap<Option<String>, Result<Bytes, StorageError>>,
+    iter_chunks_result: Vec<(u64, Result<Bytes, StorageError>)>,
+    download_chunk_result: HashMap<Option<(String, u64)>, Result<Bytes, StorageError>>,
+    chunk_id_mapper_result: Result<DummyChunkIdMapper, StorageError>,
+}
+
+impl StubStorage {
+    pub fn new() -> Self {
+        Self {
+            upload_bytes_result: Ok("dummy_hash".to_string()),
+            download_bytes_result: HashMap::new(),
+            iter_chunks_result: vec![(0, Ok(Bytes::from("dummy data")))],
+            download_chunk_result: HashMap::new(),
+            chunk_id_mapper_result: Ok(DummyChunkIdMapper {}),
+        }
+    }
+
+    pub fn stub_upload_bytes(&mut self, result: Result<String, StorageError>) {
+        self.upload_bytes_result = result;
+    }
+
+    pub fn stub_download_bytes(
+        &mut self,
+        hash: Option<String>,
+        result: Result<Bytes, StorageError>,
+    ) {
+        self.download_bytes_result.insert(hash, result);
+    }
+
+    pub fn stub_iter_chunks(&mut self, chunks: Vec<(u64, Result<Bytes, StorageError>)>) {
+        self.iter_chunks_result = chunks;
+    }
+
+    pub fn stub_download_chunk(
+        &mut self,
+        params: Option<(String, u64)>,
+        result: Result<Bytes, StorageError>,
+    ) {
+        self.download_chunk_result.insert(params, result);
+    }
+
+    pub fn stub_chunk_id_mapper(&mut self, result: Result<DummyChunkIdMapper, StorageError>) {
+        self.chunk_id_mapper_result = result;
+    }
+}
+
+#[async_trait]
+impl Storage for StubStorage {
+    type ChunkId = u64;
+    type ChunkIdMapper = DummyChunkIdMapper;
+
+    async fn upload_bytes(&self, _: impl Into<Bytes> + Send) -> Result<String, StorageError> {
+        self.upload_bytes_result.clone()
+    }
+
+    async fn download_bytes(&self, hash: &str) -> Result<Bytes, StorageError> {
+        self.download_bytes_result
+            .get(&Some(hash.to_string()))
+            .or_else(|| self.download_bytes_result.get(&None))
+            .cloned()
+            .unwrap_or_else(|| Ok(Bytes::from("dummy data")))
+    }
+
+    async fn iter_chunks(&self, _: &str) -> Result<ByteStream<Self::ChunkId>, StorageError> {
+        Ok(Box::pin(futures::stream::iter(
+            self.iter_chunks_result
+                .clone()
+                .into_iter()
+                .map(|(id, res)| (id, res.map_err(|e| anyhow::anyhow!(e)))),
+        )))
+    }
+
+    async fn download_chunk(
+        &self,
+        hash: &str,
+        chunk_id: Self::ChunkId,
+    ) -> Result<Bytes, StorageError> {
+        self.download_chunk_result
+            .get(&Some((hash.to_string(), chunk_id)))
+            .or_else(|| self.download_chunk_result.get(&None))
+            .cloned()
+            .unwrap_or_else(|| Ok(Bytes::from("dummy data")))
+    }
+
+    async fn chunk_id_mapper(&self, _: &str) -> Result<Self::ChunkIdMapper, StorageError> {
+        self.chunk_id_mapper_result.clone()
+    }
+}
+
+#[derive(Clone)]
+pub struct SpyStorage {
+    inner: StubStorage,
+    upload_bytes_calls: Arc<RwLock<Vec<Bytes>>>,
+    download_bytes_calls: Arc<RwLock<Vec<String>>>,
+    iter_chunks_calls: Arc<RwLock<Vec<String>>>,
+    download_chunk_calls: Arc<RwLock<Vec<(String, u64)>>>,
+    chunk_id_mapper_calls: Arc<RwLock<Vec<String>>>,
+}
+
+impl std::ops::Deref for SpyStorage {
+    type Target = StubStorage;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl std::ops::DerefMut for SpyStorage {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
+impl SpyStorage {
+    pub fn new() -> Self {
+        Self {
+            inner: StubStorage::new(),
+            upload_bytes_calls: Arc::new(RwLock::new(Vec::new())),
+            download_bytes_calls: Arc::new(RwLock::new(Vec::new())),
+            iter_chunks_calls: Arc::new(RwLock::new(Vec::new())),
+            download_chunk_calls: Arc::new(RwLock::new(Vec::new())),
+            chunk_id_mapper_calls: Arc::new(RwLock::new(Vec::new())),
+        }
+    }
+
+    pub fn upload_bytes_calls(&self) -> Vec<Bytes> {
+        self.upload_bytes_calls.read().unwrap().clone()
+    }
+
+    pub fn download_bytes_calls(&self) -> Vec<String> {
+        self.download_bytes_calls.read().unwrap().clone()
+    }
+
+    pub fn iter_chunks_calls(&self) -> Vec<String> {
+        self.iter_chunks_calls.read().unwrap().clone()
+    }
+
+    pub fn download_chunk_calls(&self) -> Vec<(String, u64)> {
+        self.download_chunk_calls.read().unwrap().clone()
+    }
+
+    pub fn chunk_id_mapper_calls(&self) -> Vec<String> {
+        self.chunk_id_mapper_calls.read().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl Storage for SpyStorage {
+    type ChunkId = u64;
+    type ChunkIdMapper = DummyChunkIdMapper;
+
+    async fn upload_bytes(&self, bytes: impl Into<Bytes> + Send) -> Result<String, StorageError> {
+        let bytes = bytes.into();
+        self.upload_bytes_calls.write().unwrap().push(bytes.clone());
+        self.inner.upload_bytes(bytes).await
+    }
+
+    async fn download_bytes(&self, hash: &str) -> Result<Bytes, StorageError> {
+        self.download_bytes_calls
+            .write()
+            .unwrap()
+            .push(hash.to_string());
+        self.inner.download_bytes(hash).await
+    }
+
+    async fn iter_chunks(&self, hash: &str) -> Result<ByteStream<Self::ChunkId>, StorageError> {
+        self.iter_chunks_calls
+            .write()
+            .unwrap()
+            .push(hash.to_string());
+        self.inner.iter_chunks(hash).await
+    }
+
+    async fn download_chunk(
+        &self,
+        hash: &str,
+        chunk_id: Self::ChunkId,
+    ) -> Result<Bytes, StorageError> {
+        self.download_chunk_calls
+            .write()
+            .unwrap()
+            .push((hash.to_string(), chunk_id));
+        self.inner.download_chunk(hash, chunk_id).await
+    }
+
+    async fn chunk_id_mapper(&self, hash: &str) -> Result<Self::ChunkIdMapper, StorageError> {
+        self.chunk_id_mapper_calls
+            .write()
+            .unwrap()
+            .push(hash.to_string());
+        self.inner.chunk_id_mapper(hash).await
     }
 }
 

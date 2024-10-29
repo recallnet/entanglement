@@ -8,20 +8,25 @@ use futures::Stream;
 use std::{fmt::Display, pin::Pin};
 use thiserror;
 
+#[cfg(feature = "mock")]
+type ClonableError = String;
+#[cfg(not(feature = "mock"))]
+type ClonableError = anyhow::Error;
+
+#[cfg_attr(feature = "mock", derive(Clone))]
 /// Error type for storage operations.
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     /// Error indicating that a blob with the specified hash was not found.
     #[error("Blob with hash {0} not found")]
     BlobNotFound(String),
-
     /// Error indicating that a chunk with the specified id was not found in the specified blob.
     #[error("Chunk with id {0} not found in blob {1}: {2}")]
-    ChunkNotFound(String, String, anyhow::Error),
+    ChunkNotFound(String, String, ClonableError),
 
     /// General storage error.
     #[error("Storage error: {0}")]
-    StorageError(#[from] anyhow::Error),
+    StorageError(ClonableError),
 
     /// Error indicating that the provided hash is invalid.
     #[error("Invalid hash {0}. Error: {1}")]
@@ -29,7 +34,11 @@ pub enum Error {
 
     /// A catch-all error for other types of errors.
     #[error("Error occurred: {0}")]
-    Other(#[source] anyhow::Error),
+    Other(ClonableError),
+}
+
+pub fn wrap_error(err: anyhow::Error) -> ClonableError {
+    err.to_string()
 }
 
 /// Trait used to identify chunks.
@@ -64,7 +73,7 @@ pub trait Storage: Send + Clone {
     /// # Returns
     ///
     /// A `Result` containing the hash of the uploaded data, or an error if the upload fails.
-    async fn upload_bytes(&self, bytes: impl Into<Bytes> + Send) -> Result<String>;
+    async fn upload_bytes(&self, bytes: impl Into<Bytes> + Send) -> Result<String, Error>;
 
     /// Downloads the bytes identified by the given hash.
     ///
