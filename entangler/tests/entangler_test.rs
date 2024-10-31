@@ -3,7 +3,7 @@
 
 use anyhow::Result;
 use bytes::{BufMut, Bytes, BytesMut};
-use entangler::{self, parity::StrandType, ChunkRange, Entangler, Metadata};
+use entangler::{self, parity::StrandType, ChunkRange, Config, Entangler, Metadata};
 use std::collections::HashSet;
 use std::str::FromStr;
 use storage::{self, mock::FakeStorage, ChunkIdMapper, Storage};
@@ -39,7 +39,7 @@ fn new_entangler_from_node<S: iroh::blobs::store::Store>(
     node: &iroh::node::Node<S>,
 ) -> Result<Entangler<storage::iroh::IrohStorage>, entangler::Error> {
     let st = storage::iroh::IrohStorage::from_client(node.client().clone());
-    Entangler::new(st, 3, HEIGHT as u8, HEIGHT as u8)
+    Entangler::new(st, Config::new(3, HEIGHT as u8, HEIGHT as u8))
 }
 
 async fn load_parity_data_to_node<S>(
@@ -180,7 +180,10 @@ async fn if_blob_is_missing_and_metadata_is_provided_error() -> Result<()> {
 #[tokio::test]
 async fn if_chunk_is_missing_and_metadata_is_provided_should_repair() -> Result<()> {
     let mock_storage = FakeStorage::new();
-    let ent = Entangler::new(mock_storage.clone(), 3, HEIGHT as u8, HEIGHT as u8)?;
+    let ent = Entangler::new(
+        mock_storage.clone(),
+        Config::new(3, HEIGHT as u8, HEIGHT as u8),
+    )?;
 
     let bytes = create_bytes(NUM_CHUNKS);
     let hashes = ent.upload(bytes.clone()).await?;
@@ -497,7 +500,10 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
             );
 
             let mock_storage = FakeStorage::new();
-            let ent = Entangler::new(mock_storage.clone(), 3, HEIGHT as u8, HEIGHT as u8)?;
+            let ent = Entangler::new(
+                mock_storage.clone(),
+                Config::new(3, HEIGHT as u8, HEIGHT as u8),
+            )?;
 
             let bytes = create_bytes(NUM_CHUNKS);
 
@@ -670,7 +676,10 @@ async fn test_download_chunks_range_and_repair_scenarios() -> Result<()> {
                 );
 
                 let mock_storage = FakeStorage::new();
-                let ent = Entangler::new(mock_storage.clone(), 3, HEIGHT as u8, HEIGHT as u8)?;
+                let ent = Entangler::new(
+                    mock_storage.clone(),
+                    Config::new(3, HEIGHT as u8, HEIGHT as u8),
+                )?;
 
                 let bytes = create_bytes(NUM_CHUNKS);
 
@@ -735,6 +744,153 @@ async fn test_download_chunks_range_and_repair_scenarios() -> Result<()> {
             }
         }
     }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn if_download_fails_it_should_upload_to_storage_after_repair() -> Result<()> {
+    enum Method {
+        Download,
+        Range,
+        Chunks,
+    }
+
+    impl std::fmt::Display for Method {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Method::Download => write!(f, "download blob"),
+                Method::Range => write!(f, "download range"),
+                Method::Chunks => write!(f, "download chunks"),
+            }
+        }
+    }
+
+    struct TestCase {
+        method: Method,
+        always_repair: bool,
+        expect_upload: bool,
+    }
+
+    let test_cases = vec![
+        TestCase {
+            method: Method::Download,
+            always_repair: true,
+            expect_upload: true,
+        },
+        TestCase {
+            method: Method::Download,
+            always_repair: false,
+            expect_upload: true,
+        },
+        TestCase {
+            method: Method::Range,
+            always_repair: true,
+            expect_upload: true,
+        },
+        TestCase {
+            method: Method::Range,
+            always_repair: false,
+            expect_upload: false,
+        },
+        TestCase {
+            method: Method::Chunks,
+            always_repair: true,
+            expect_upload: true,
+        },
+        TestCase {
+            method: Method::Chunks,
+            always_repair: false,
+            expect_upload: false,
+        },
+    ];
+
+    for t in test_cases {
+        let bytes = create_bytes(NUM_CHUNKS);
+
+        let storage = FakeStorage::new();
+        let hash = storage.upload_bytes(bytes.clone()).await?;
+
+        let mut conf = Config::new(3, 3, 3);
+        conf.always_repair = t.always_repair;
+        let ent = Entangler::new(storage.clone(), conf).unwrap();
+        let m_hash = ent.entangle_uploaded(hash.clone()).await?;
+
+        storage.fake_failed_download(&hash);
+        storage.fake_failed_chunks(&hash, vec![1]);
+
+        let res = storage.download_bytes(&hash).await;
+        assert!(matches!(res, Err(storage::Error::BlobNotFound(_))));
+
+        match t.method {
+            Method::Download => {
+                let result = ent.download(&hash, Some(&m_hash)).await;
+                assert!(result.is_ok(), "Failed to download blob: {:?}", result);
+            }
+            Method::Range => {
+                let result = ent
+                    .download_range(&hash, ChunkRange::From(0), Some(&m_hash))
+                    .await;
+                assert!(result.is_ok(), "Failed to download range: {:?}", result);
+            }
+            Method::Chunks => {
+                let result = ent
+                    .download_chunks(&hash, vec![0, 1, 2], Some(&m_hash))
+                    .await;
+                assert!(result.is_ok(), "Failed to download chunks: {:?}", result);
+            }
+        }
+
+        let res = storage.download_bytes(&hash).await;
+        assert_eq!(
+            res.is_ok(),
+            t.expect_upload,
+            "Unexpected upload result for method: {}",
+            t.method
+        );
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_upload_small_file() -> Result<()> {
+    let storage = FakeStorage::new();
+    let ent = Entangler::new(storage.clone(), Config::new(3, 5, 5))?;
+
+    let bytes = Bytes::from_static(b"small chunk");
+    let hashes = ent.upload(bytes.clone()).await?;
+
+    let res = storage.download_bytes(&hashes.0).await;
+    assert!(res.is_ok(), "Failed to download blob: {:?}", res);
+
+    let result = ent.download(&hashes.0, None).await;
+    assert!(result.is_ok(), "Failed to download blob: {:?}", result);
+    assert_eq!(result.unwrap(), bytes);
+
+    Ok(())
+}
+
+// This test is ignored because repairing of small blobs is not implemented yet
+#[tokio::test]
+#[ignore]
+async fn test_upload_and_repair_small_file() -> Result<()> {
+    let storage = FakeStorage::new();
+    let ent = Entangler::new(storage.clone(), Config::new(3, 5, 5))?;
+
+    let bytes = Bytes::from_static(b"small chunk");
+    let hashes = ent.upload(bytes.clone()).await?;
+
+    storage.fake_failed_download(&hashes.0);
+    storage.fake_failed_chunks(&hashes.0, vec![0]);
+
+    let result = ent.download(&hashes.0, Some(&hashes.1)).await;
+    assert!(result.is_ok(), "Failed to download blob: {:?}", result);
+    assert_eq!(result.unwrap(), bytes);
+
+    let result = storage.download_bytes(&hashes.0).await;
+    assert!(result.is_ok(), "Did not upload repaired blob: {:?}", result);
+    assert_eq!(result.unwrap(), bytes);
 
     Ok(())
 }

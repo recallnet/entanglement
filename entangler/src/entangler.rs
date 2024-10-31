@@ -10,6 +10,7 @@ use storage::{ByteStream, ChunkIdMapper, Error as StorageError, Storage};
 use crate::executer;
 use crate::grid::{Grid, Positioner};
 use crate::repairer::{self, Repairer};
+use crate::Config;
 use crate::Metadata;
 
 const CHUNK_SIZE: u64 = 1024;
@@ -55,8 +56,7 @@ pub enum Error {
 /// through the use of parity chunks.
 pub struct Entangler<T: Storage> {
     storage: T,
-    alpha: u8,
-    s: u8,
+    config: Config,
 }
 
 /// Represents a range of chunks to download.
@@ -86,20 +86,23 @@ impl<T: Storage> Entangler<T> {
     /// A new `Entangler` instance.
     ///
     /// See also [storage]
-    pub fn new(storage: T, alpha: u8, s: u8, p: u8) -> Result<Self, Error> {
-        if alpha == 0 || s == 0 {
+    pub fn new(storage: T, conf: Config) -> Result<Self, Error> {
+        if conf.alpha == 0 || conf.s == 0 {
             return Err(Error::InvalidEntanglementParameter(
-                (if alpha == 0 { "alpha" } else { "s" }).to_string(),
-                if alpha == 0 { alpha } else { s },
+                (if conf.alpha == 0 { "alpha" } else { "s" }).to_string(),
+                if conf.alpha == 0 { conf.alpha } else { conf.s },
             ));
         }
         // at the moment it's not clear how to take a helical strand around the cylinder so that
         // it completes a revolution after LW on the same horizontal strand. That's why
         // p should be a multiple of s.
-        if p != 0 && (p < s || p % s != 0) {
-            return Err(Error::InvalidEntanglementParameter("p".to_string(), p));
+        if conf.p != 0 && (conf.p < conf.s || conf.p % conf.s != 0) {
+            return Err(Error::InvalidEntanglementParameter("p".to_string(), conf.p));
         }
-        Ok(Self { storage, alpha, s })
+        Ok(Self {
+            storage,
+            config: conf,
+        })
     }
 
     /// Creates entangled parity blobs for the given data and uploads them to the storage backend.
@@ -128,9 +131,9 @@ impl<T: Storage> Entangler<T> {
         let chunks = bytes_to_chunks(bytes, CHUNK_SIZE);
         let num_chunks = chunks.len() as u64;
 
-        let orig_grid = Grid::new(chunks, u64::min(self.s as u64, num_chunks))?;
+        let orig_grid = Grid::new(chunks, u64::min(self.config.s as u64, num_chunks))?;
 
-        let exec = executer::Executer::new(self.alpha);
+        let exec = executer::Executer::new(self.config.alpha);
 
         let mut parity_hashes = HashMap::new();
         for parity_grid in exec.iter_parities(orig_grid) {
@@ -144,8 +147,8 @@ impl<T: Storage> Entangler<T> {
             parity_hashes,
             num_bytes: num_bytes as u64,
             chunk_size: CHUNK_SIZE,
-            s: self.s,
-            p: self.s,
+            s: self.config.s,
+            p: self.config.s,
         };
 
         let metadata = serde_json::to_string(&metadata).unwrap();
@@ -183,7 +186,10 @@ impl<T: Storage> Entangler<T> {
     pub async fn download(&self, hash: &str, metadata_hash: Option<&str>) -> Result<Bytes, Error> {
         match (self.storage.download_bytes(hash).await, metadata_hash) {
             (Ok(data), _) => Ok(data),
-            (Err(_), Some(metadata_hash)) => self.download_repaired(hash, metadata_hash).await,
+            (Err(_), Some(metadata_hash)) => {
+                self.download_repaired(hash, self.download_metadata(metadata_hash).await?)
+                    .await
+            }
             (Err(e), _) => Err(Error::BlobDownload {
                 hash: hash.to_string(),
                 source: e.into(),
@@ -292,16 +298,30 @@ impl<T: Storage> Entangler<T> {
         }
 
         let metadata = self.download_metadata(metadata_hash.unwrap()).await?;
-        let repaired_data = self
-            .repair_chunks(
-                metadata,
-                failed_chunks,
-                self.storage.chunk_id_mapper(hash).await?,
-            )
-            .await?;
 
-        for (chunk_id, chunk) in repaired_data {
-            chunks.insert(chunk_id, chunk);
+        if self.config.always_repair {
+            let ch_size = metadata.chunk_size as usize;
+            let res = self.download_repaired(hash, metadata).await?;
+            let mapper = self.storage.chunk_id_mapper(hash).await?;
+            for chunk_id in failed_chunks {
+                let index = mapper.id_to_index(&chunk_id)?;
+                chunks.insert(
+                    chunk_id,
+                    res.slice(index as usize * ch_size..(index as usize + 1) * ch_size),
+                );
+            }
+        } else {
+            let repaired_data = self
+                .repair_chunks(
+                    metadata,
+                    failed_chunks,
+                    self.storage.chunk_id_mapper(hash).await?,
+                )
+                .await?;
+
+            for (chunk_id, chunk) in repaired_data {
+                chunks.insert(chunk_id, chunk);
+            }
         }
 
         Ok(chunks)
@@ -315,12 +335,11 @@ impl<T: Storage> Entangler<T> {
     /// Downloads the data identified by the given hash and attempts to repair it using the parity
     /// blobs identified by the metadata hash. Returns the repaired data.
     /// It downloads the original blob chunk-by-chunk and tries to repair the missing chunks.
-    async fn download_repaired(&self, hash: &str, metadata_hash: &str) -> Result<Bytes, Error> {
-        let metadata = self.download_metadata(metadata_hash).await?;
-
+    async fn download_repaired(&self, hash: &str, metadata: Metadata) -> Result<Bytes, Error> {
         match self.storage.iter_chunks(hash).await {
             Ok(stream) => {
-                let num_chunks = (metadata.num_bytes + CHUNK_SIZE - 1) / CHUNK_SIZE;
+                let num_chunks =
+                    (metadata.num_bytes + metadata.chunk_size - 1) / metadata.chunk_size;
                 let height = metadata.s as u64;
                 let (available_chunks, missing_indexes, mapper) =
                     self.analyze_chunks(hash, stream, num_chunks).await?;
@@ -339,6 +358,8 @@ impl<T: Storage> Entangler<T> {
                     let index = mapper.id_to_index(&chunk_id)?;
                     grid.set_cell(positioner.index_to_pos(index), chunk);
                 }
+
+                self.storage.upload_bytes(grid.assemble_data()).await?;
                 Ok(grid.assemble_data())
             }
             Err(e) => Err(Error::Storage(e)),
@@ -415,74 +436,22 @@ fn add_padding(chunk: &Bytes, chunk_size: usize) -> Bytes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
-    use storage::ChunkIdMapper;
-
-    #[derive(Clone)]
-    struct MockStorage;
-
-    #[derive(Clone)]
-    pub struct MockChunkIdMapper {}
-
-    impl ChunkIdMapper<u64> for MockChunkIdMapper {
-        fn index_to_id(&self, index: u64) -> Result<u64, StorageError> {
-            Ok(index)
-        }
-
-        fn id_to_index(&self, chunk_id: &u64) -> Result<u64, StorageError> {
-            Ok(*chunk_id)
-        }
-    }
-
-    #[async_trait]
-    impl Storage for MockStorage {
-        type ChunkId = u64;
-        type ChunkIdMapper = MockChunkIdMapper;
-
-        async fn upload_bytes(&self, _: impl Into<Bytes> + Send) -> Result<String> {
-            Ok("mock_hash".to_string())
-        }
-
-        async fn chunk_id_mapper(&self, _: &str) -> Result<Self::ChunkIdMapper, StorageError> {
-            Ok(MockChunkIdMapper {})
-        }
-
-        async fn download_bytes(&self, _: &str) -> Result<Bytes, StorageError> {
-            Ok(Bytes::from("mock data"))
-        }
-
-        async fn iter_chunks(&self, _: &str) -> Result<ByteStream<Self::ChunkId>, StorageError> {
-            let chunks = vec![Bytes::from("mock data")];
-
-            let stream = futures::stream::iter(
-                chunks
-                    .into_iter()
-                    .enumerate()
-                    .map(move |(index, chunk)| (index as u64, Ok(chunk))),
-            );
-
-            Ok(Box::pin(stream))
-        }
-
-        async fn download_chunk(&self, _: &str, _: Self::ChunkId) -> Result<Bytes, StorageError> {
-            Ok(Bytes::from("mock data"))
-        }
-    }
+    use storage::mock::{DummyStorage, SpyStorage};
 
     #[test]
     fn test_entangler_new_valid_parameters() {
-        let storage = MockStorage;
-        let result = Entangler::new(storage, 3, 2, 4);
+        let storage = DummyStorage;
+        let result = Entangler::new(storage, Config::new(3, 2, 4));
         assert!(result.is_ok());
         let entangler = result.unwrap();
-        assert_eq!(entangler.alpha, 3);
-        assert_eq!(entangler.s, 2);
+        assert_eq!(entangler.config.alpha, 3);
+        assert_eq!(entangler.config.s, 2);
     }
 
     #[test]
     fn test_entangler_new_alpha_zero() {
-        let storage = MockStorage;
-        let result = Entangler::new(storage, 0, 2, 4);
+        let storage = DummyStorage;
+        let result = Entangler::new(storage, Config::new(0, 2, 4));
         assert!(result.is_err());
         assert!(matches!(
             result.err().unwrap(),
@@ -492,8 +461,8 @@ mod tests {
 
     #[test]
     fn test_entangler_new_s_zero() {
-        let storage = MockStorage;
-        let result = Entangler::new(storage, 3, 0, 4);
+        let storage = DummyStorage;
+        let result = Entangler::new(storage, Config::new(3, 0, 4));
         assert!(result.is_err());
         assert!(matches!(
             result.err().unwrap(),
@@ -503,8 +472,8 @@ mod tests {
 
     #[test]
     fn test_entangler_new_p_less_than_s() {
-        let storage = MockStorage;
-        let result = Entangler::new(storage, 3, 4, 2);
+        let storage = DummyStorage;
+        let result = Entangler::new(storage, Config::new(3, 4, 2));
         assert!(result.is_err());
         assert!(matches!(
             result.err().unwrap(),
@@ -514,8 +483,8 @@ mod tests {
 
     #[test]
     fn test_entangler_new_p_not_multiple_of_s() {
-        let storage = MockStorage;
-        let result = Entangler::new(storage, 3, 3, 7);
+        let storage = DummyStorage;
+        let result = Entangler::new(storage, Config::new(3, 3, 7));
         assert!(result.is_err());
         assert!(matches!(
             result.err().unwrap(),
@@ -525,21 +494,70 @@ mod tests {
 
     #[test]
     fn test_entangler_new_p_zero() {
-        let storage = MockStorage;
-        let result = Entangler::new(storage, 3, 2, 0);
+        let storage = DummyStorage;
+        let result = Entangler::new(storage, Config::new(3, 2, 0));
         assert!(result.is_ok());
         let entangler = result.unwrap();
-        assert_eq!(entangler.alpha, 3);
-        assert_eq!(entangler.s, 2);
+        assert_eq!(entangler.config.alpha, 3);
+        assert_eq!(entangler.config.s, 2);
     }
 
     #[test]
     fn test_entangler_new_p_valid_multiple_of_s() {
-        let storage = MockStorage;
-        let result = Entangler::new(storage, 3, 2, 6);
+        let storage = DummyStorage;
+        let result = Entangler::new(storage, Config::new(3, 2, 6));
         assert!(result.is_ok());
         let entangler = result.unwrap();
-        assert_eq!(entangler.alpha, 3);
-        assert_eq!(entangler.s, 2);
+        assert_eq!(entangler.config.alpha, 3);
+        assert_eq!(entangler.config.s, 2);
+    }
+
+    #[tokio::test]
+    async fn test_if_download_fails_it_should_upload_to_storage_after_repair() {
+        let hash = "hash".to_string();
+        let m_hash = "metadata_hash".to_string();
+        let chunks = vec!["chunk0", "chunk1", "chunk2"];
+
+        let mut storage = SpyStorage::default();
+        storage.stub_download_bytes(
+            Some(hash.clone()),
+            Err(StorageError::BlobNotFound(hash.clone())),
+        );
+        storage.stub_iter_chunks(
+            chunks
+                .iter()
+                .enumerate()
+                .map(|(i, chunk)| (i as u64, Ok(Bytes::from(*chunk))))
+                .collect(),
+        );
+
+        let metadata = Metadata {
+            orig_hash: hash.clone(),
+            parity_hashes: HashMap::new(),
+            num_bytes: 18,
+            chunk_size: 6,
+            s: 3,
+            p: 3,
+        };
+        let json = serde_json::json!(metadata).to_string();
+        storage.stub_download_bytes(Some(m_hash.clone()), Ok(Bytes::from(json)));
+
+        let entangler = Entangler::new(storage.clone(), Config::new(3, 3, 3)).unwrap();
+
+        let result = entangler.download(&hash, Some(&m_hash)).await;
+        assert!(result.is_ok());
+
+        let calls = storage.upload_bytes_calls();
+        assert_eq!(
+            calls.len(),
+            1,
+            "Expected 1 call to upload_bytes, got {:?}",
+            calls.len()
+        );
+        assert_eq!(
+            calls[0],
+            Bytes::from(chunks.into_iter().collect::<String>()),
+            "Unexpected data uploaded"
+        );
     }
 }
