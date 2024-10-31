@@ -11,7 +11,7 @@ use clap::{Args, Parser, Subcommand};
 use std::str::FromStr;
 use stderrlog::Timestamp;
 
-use entangler::Entangler;
+use entangler::{Config, Entangler};
 use storage::iroh::IrohStorage;
 
 #[derive(Parser)]
@@ -106,7 +106,7 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let entangler = Entangler::new(storage, 3, 3, 3)?;
+    let entangler = Entangler::new(storage, Config::new(3, 3, 3))?;
 
     match cli.command {
         Commands::Upload(args) => {

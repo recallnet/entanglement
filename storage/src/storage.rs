@@ -8,12 +8,12 @@ use futures::Stream;
 use std::{fmt::Display, pin::Pin};
 use thiserror;
 
-#[cfg(feature = "mock")]
+#[cfg(any(test, feature = "mock"))]
 type ClonableError = String;
-#[cfg(not(feature = "mock"))]
+#[cfg(not(any(test, feature = "mock")))]
 type ClonableError = anyhow::Error;
 
-#[cfg_attr(feature = "mock", derive(Clone))]
+#[cfg_attr(any(test, feature = "mock"), derive(Clone))]
 /// Error type for storage operations.
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -38,7 +38,10 @@ pub enum Error {
 }
 
 pub fn wrap_error(err: anyhow::Error) -> ClonableError {
-    err.to_string()
+    #[cfg(any(test, feature = "mock"))]
+    return err.to_string();
+    #[cfg(not(any(test, feature = "mock")))]
+    return err;
 }
 
 /// Trait used to identify chunks.

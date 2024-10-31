@@ -188,6 +188,9 @@ impl<T: Storage> Healer<T> {
     async fn heal_data_node(&mut self, pos: Pos, dirs: Vec<Dir>) -> bool {
         for i in 0..dirs.len() {
             let neighbor_pos = self.positioner.normalize(pos.adjacent(dirs[i]));
+            if !self.positioner.is_pos_available(neighbor_pos) {
+                continue;
+            }
             // Check if the neighbor is a healthy data node
             if let Some(healthy_neighbor) = self.healthy_graph.get_data_node(neighbor_pos).cloned()
             {

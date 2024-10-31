@@ -112,6 +112,8 @@ impl Storage for FakeStorage {
             .collect();
         self.data.lock().unwrap().insert(hash_str.clone(), chunks);
 
+        self.fail_blobs.lock().unwrap().remove(&hash_str);
+
         Ok(hash_str)
     }
 
@@ -486,6 +488,23 @@ mod tests {
         storage.fake_failed_download(&hash);
         let result = storage.download_bytes(&hash).await;
         assert!(matches!(result, Err(StorageError::BlobNotFound(_))));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_fake_failed_download_after_upload_available() -> Result<()> {
+        let storage = FakeStorage::new();
+        let data = b"Test data".to_vec();
+        let hash = storage.upload_bytes(data.clone()).await?;
+
+        let result = storage.download_bytes(&hash).await;
+        assert!(result.is_ok());
+
+        storage.fake_failed_download(&hash);
+        storage.upload_bytes(data).await?;
+
+        let result = storage.download_bytes(&hash).await;
+        assert!(result.is_ok(), "Expected download to succeed after upload");
         Ok(())
     }
 
