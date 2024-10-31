@@ -40,10 +40,11 @@ impl Config {
     ///
     /// A new `Config` with the given parameters.
     pub fn new(alpha: u8, s: u8, p: u8) -> Self {
-        let mut c = Self::default();
-        c.alpha = alpha;
-        c.s = s;
-        c.p = p;
-        c
+        Config {
+            alpha,
+            s,
+            p,
+            ..Default::default()
+        }
     }
 }
