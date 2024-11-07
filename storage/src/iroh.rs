@@ -11,7 +11,9 @@ use iroh::{blobs::Hash, client::Iroh as Client};
 use std::sync::Arc;
 use std::{path::Path, str::FromStr};
 
-use crate::storage::{self, ByteStream, ChunkId, ChunkIdMapper, Error as StorageError, Storage};
+use crate::storage::{
+    self, ByteStream, ChunkId, ChunkIdMapper, ChunkStream, Error as StorageError, Storage,
+};
 
 const CHUNK_SIZE: u64 = 1024;
 
@@ -144,6 +146,8 @@ impl ChunkIdMapper<u64> for IrohChunkIdMapper {
     }
 }
 
+use futures::StreamExt;
+
 #[async_trait]
 impl Storage for IrohStorage {
     type ChunkId = u64;
@@ -154,31 +158,30 @@ impl Storage for IrohStorage {
         Ok(blob.hash.to_string())
     }
 
-    async fn download_bytes(&self, hash: &str) -> Result<Bytes, StorageError> {
+    async fn download_bytes(&self, hash: &str) -> Result<ByteStream, StorageError> {
         let hash = parse_hash(hash)?;
-        let res = self
+        let reader = self
             .client()
             .blobs()
-            .read_to_bytes(hash)
+            .read(hash)
             .await
             .map_err(|e| StorageError::StorageError(storage::wrap_error(e)))?;
-        Ok(res)
+        let stream = reader
+            .map(|res| res.map_err(|e| StorageError::StorageError(storage::wrap_error(e.into()))));
+        Ok(Box::pin(stream))
     }
 
-    async fn iter_chunks(&self, hash: &str) -> Result<ByteStream<u64>, StorageError> {
+    async fn iter_chunks(&self, hash: &str) -> Result<ChunkStream<Self::ChunkId>, StorageError> {
         let hash = parse_hash(hash)?;
-        let reader = self.client().blobs().read(hash).await;
-        if let Err(e) = reader {
+        let reader = self.client().blobs().read(hash).await.map_err(|e| {
             let err_str = e.to_string();
             if err_str.contains("not found") {
-                return Err(StorageError::BlobNotFound(hash.to_string()));
+                StorageError::BlobNotFound(hash.to_string())
             } else {
-                return Err(StorageError::StorageError(storage::wrap_error(e)));
+                StorageError::StorageError(storage::wrap_error(e))
             }
-        }
-        let total_size = reader
-            .map_err(|e| StorageError::StorageError(storage::wrap_error(e)))?
-            .size();
+        })?;
+        let total_size = reader.size();
 
         let stream = stream::unfold(
             (self.client().blobs().clone(), 0u64),
@@ -200,7 +203,13 @@ impl Storage for IrohStorage {
                             let new_offset = offset + len as u64;
                             ((chunk_id, Ok(chunk)), (client, new_offset))
                         }
-                        Err(e) => ((chunk_id, Err(e)), (client, offset + len as u64)),
+                        Err(e) => (
+                            (
+                                chunk_id,
+                                Err(StorageError::StorageError(storage::wrap_error(e))),
+                            ),
+                            (client, offset + len as u64),
+                        ),
                     },
                 )
             },
@@ -251,8 +260,12 @@ mod tests {
 
     async fn collect_chunks(storage: &IrohStorage, hash: &str) -> Result<Vec<Bytes>> {
         let stream = storage.iter_chunks(hash).await?;
-        let results: Vec<Result<Bytes>> = stream.map(|res| res.1).collect().await;
-        results.into_iter().collect()
+        let results: Vec<Result<Bytes, StorageError>> = stream
+            .map(|res| res.1)
+            .collect()
+            .await;
+        let bytes_vec = results.into_iter().collect::<Result<Vec<_>, _>>()?;
+        Ok(bytes_vec)
     }
 
     #[tokio::test]

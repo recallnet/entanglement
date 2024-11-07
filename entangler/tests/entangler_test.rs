@@ -4,6 +4,7 @@
 use anyhow::Result;
 use bytes::{BufMut, Bytes, BytesMut};
 use entangler::{self, parity::StrandType, ChunkRange, Config, Entangler, Metadata};
+use futures::{Stream, StreamExt};
 use std::collections::HashSet;
 use std::str::FromStr;
 use storage::{self, mock::FakeStorage, ChunkIdMapper, Storage};
@@ -69,9 +70,21 @@ async fn load_parity_data_to_node<S>(
     Ok(())
 }
 
+async fn read_stream<S, E>(mut stream: S) -> Result<Bytes, anyhow::Error>
+where
+    S: Stream<Item = Result<Bytes, E>> + Unpin,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    let mut bytes = BytesMut::with_capacity(stream.size_hint().0);
+    while let Some(chunk) = stream.next().await {
+        bytes.extend_from_slice(&chunk?);
+    }
+    Ok(bytes.freeze())
+}
+
 async fn load_metadata(hash: &str, storage: &impl Storage) -> Result<Metadata> {
     let metadata_bytes = storage.download_bytes(hash).await?;
-    Ok(serde_json::from_slice(&metadata_bytes)?)
+    Ok(serde_json::from_slice(&read_stream(metadata_bytes).await?)?)
 }
 
 #[tokio::test]
@@ -136,7 +149,8 @@ async fn test_download_bytes_from_iroh() -> Result<()> {
     let bytes = create_bytes(NUM_CHUNKS);
     let hashes = ent.upload(bytes.clone()).await?;
 
-    let downloaded_bytes = ent.download(&hashes.0, None).await?;
+    let stream = ent.download(&hashes.0, None).await?;
+    let downloaded_bytes = read_stream(stream).await?;
     assert_eq!(downloaded_bytes, bytes, "downloaded data mismatch");
     Ok(())
 }
@@ -191,9 +205,8 @@ async fn if_chunk_is_missing_and_metadata_is_provided_should_repair() -> Result<
     mock_storage.fake_failed_download(&hashes.0);
     mock_storage.fake_failed_chunks(&hashes.0, vec![2]);
 
-    let result = ent.download(&hashes.0, Some(&hashes.1)).await;
-    assert!(result.is_ok(), "expected download to succeed");
-    let downloaded_bytes = result?;
+    let stream = ent.download(&hashes.0, Some(&hashes.1)).await?;
+    let downloaded_bytes = read_stream(stream).await?;
     assert_eq!(downloaded_bytes, bytes, "downloaded data mismatch");
 
     Ok(())
@@ -521,15 +534,15 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
 
             (case.setup)(&mock_storage, &metadata);
 
-            let result = ent.download(&hashes.0, Some(&hashes.1)).await;
+            let stream = ent.download(&hashes.0, Some(&hashes.1)).await;
 
             if case.should_succeed {
                 assert!(
-                    result.is_ok(),
+                    stream.is_ok(),
                     "expected download to succeed for case: {}",
                     case.name
                 );
-                let downloaded_bytes = result?;
+                let downloaded_bytes = read_stream(stream.unwrap()).await?;
                 assert_eq!(
                     downloaded_bytes, bytes,
                     "downloaded data mismatch for case: {}",
@@ -537,7 +550,7 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
                 );
             } else {
                 assert!(
-                    result.is_err(),
+                    stream.is_err(),
                     "expected download to fail for case: {}",
                     case.name
                 );
@@ -824,7 +837,8 @@ async fn if_download_fails_it_should_upload_to_storage_after_repair() -> Result<
 
         match t.method {
             Method::Download => {
-                let result = ent.download(&hash, Some(&m_hash)).await;
+                let stream = ent.download(&hash, Some(&m_hash)).await?;
+                let result = read_stream(stream).await;
                 assert!(result.is_ok(), "Failed to download blob: {:?}", result);
             }
             Method::Range => {
@@ -861,10 +875,12 @@ async fn test_upload_small_file() -> Result<()> {
     let bytes = Bytes::from_static(b"small chunk");
     let hashes = ent.upload(bytes.clone()).await?;
 
-    let res = storage.download_bytes(&hashes.0).await;
-    assert!(res.is_ok(), "Failed to download blob: {:?}", res);
+    let stream = storage.download_bytes(&hashes.0).await?;
+    let result = read_stream(stream).await;
+    assert!(result.is_ok(), "Failed to download blob: {:?}", result);
 
-    let result = ent.download(&hashes.0, None).await;
+    let stream = ent.download(&hashes.0, None).await?;
+    let result = read_stream(stream).await;
     assert!(result.is_ok(), "Failed to download blob: {:?}", result);
     assert_eq!(result.unwrap(), bytes);
 
@@ -884,11 +900,13 @@ async fn test_upload_and_repair_small_file() -> Result<()> {
     storage.fake_failed_download(&hashes.0);
     storage.fake_failed_chunks(&hashes.0, vec![0]);
 
-    let result = ent.download(&hashes.0, Some(&hashes.1)).await;
+    let stream = ent.download(&hashes.0, Some(&hashes.1)).await?;
+    let result = read_stream(stream).await;
     assert!(result.is_ok(), "Failed to download blob: {:?}", result);
     assert_eq!(result.unwrap(), bytes);
 
-    let result = storage.download_bytes(&hashes.0).await;
+    let stream = storage.download_bytes(&hashes.0).await?;
+    let result = read_stream(stream).await;
     assert!(result.is_ok(), "Did not upload repaired blob: {:?}", result);
     assert_eq!(result.unwrap(), bytes);
 

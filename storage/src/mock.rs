@@ -5,14 +5,14 @@ use anyhow::Result;
 use async_trait::async_trait;
 use bytes::Bytes;
 use cid::Cid;
-use futures::stream;
+use futures::{future::ready, stream};
 use multihash::{Code, MultihashDigest};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::RwLock;
 use std::sync::{Arc, Mutex};
 
-use crate::storage::{ByteStream, ChunkIdMapper, Error as StorageError, Storage};
+use crate::storage::{ByteStream, ChunkIdMapper, ChunkStream, Error as StorageError, Storage};
 
 const CHUNK_SIZE: usize = 1024;
 
@@ -129,19 +129,27 @@ impl Storage for FakeStorage {
         })
     }
 
-    async fn download_bytes(&self, hash: &str) -> Result<Bytes, StorageError> {
+    async fn download_bytes(&self, hash: &str) -> Result<ByteStream, StorageError> {
         if self.fail_blobs.lock().unwrap().get(hash).is_some() {
             return Err(StorageError::BlobNotFound(hash.to_string()));
         }
-        self.data
+        let data = self
+            .data
             .lock()
             .unwrap()
             .get(hash)
-            .map(|chunks| Bytes::from(chunks.concat()))
-            .ok_or_else(|| StorageError::BlobNotFound(hash.to_string()))
+            .map(|chunks| chunks.concat())
+            .ok_or_else(|| StorageError::BlobNotFound(hash.to_string()))?;
+
+        let chunks: Vec<_> = data
+            .chunks(CHUNK_SIZE)
+            .map(|chunk| Ok(Bytes::copy_from_slice(chunk)))
+            .collect();
+
+        Ok(Box::pin(futures::stream::iter(chunks)))
     }
 
-    async fn iter_chunks(&self, hash: &str) -> Result<ByteStream<Self::ChunkId>, StorageError> {
+    async fn iter_chunks(&self, hash: &str) -> Result<ChunkStream<Self::ChunkId>, StorageError> {
         let chunks = self
             .data
             .lock()
@@ -158,10 +166,18 @@ impl Storage for FakeStorage {
             .cloned()
             .unwrap_or_default();
 
+        let hash = hash.to_string();
         let stream = stream::iter(chunks.into_iter().enumerate().map(move |(index, chunk)| {
             let index = index as Self::ChunkId;
             if fail_chunks.contains(&index) {
-                (index, Err(anyhow::anyhow!("Simulated chunk failure")))
+                (
+                    index,
+                    Err(StorageError::ChunkNotFound(
+                        index.to_string(),
+                        hash.clone(),
+                        "Simulated chunk failure".to_string(),
+                    )),
+                )
             } else {
                 (index, Ok(chunk))
             }
@@ -233,11 +249,13 @@ impl Storage for DummyStorage {
         Ok(DummyChunkIdMapper {})
     }
 
-    async fn download_bytes(&self, _: &str) -> Result<Bytes, StorageError> {
-        Ok(Bytes::from("dummy data"))
+    async fn download_bytes(&self, _: &str) -> Result<ByteStream, StorageError> {
+        Ok(Box::pin(futures::stream::once(ready(Ok(Bytes::from(
+            "dummy data",
+        ))))))
     }
 
-    async fn iter_chunks(&self, _: &str) -> Result<ByteStream<Self::ChunkId>, StorageError> {
+    async fn iter_chunks(&self, _: &str) -> Result<ChunkStream<Self::ChunkId>, StorageError> {
         let chunks = vec![Bytes::from("dummy data")];
 
         let stream = futures::stream::iter(
@@ -315,20 +333,23 @@ impl Storage for StubStorage {
         self.upload_bytes_result.clone()
     }
 
-    async fn download_bytes(&self, hash: &str) -> Result<Bytes, StorageError> {
-        self.download_bytes_result
+    async fn download_bytes(&self, hash: &str) -> Result<ByteStream, StorageError> {
+        let result = self
+            .download_bytes_result
             .get(&Some(hash.to_string()))
             .or_else(|| self.download_bytes_result.get(&None))
             .cloned()
-            .unwrap_or_else(|| Ok(Bytes::from("dummy data")))
+            .unwrap_or_else(|| Ok(Bytes::from("dummy data")))?;
+
+        Ok(Box::pin(futures::stream::once(ready(Ok(result)))))
     }
 
-    async fn iter_chunks(&self, _: &str) -> Result<ByteStream<Self::ChunkId>, StorageError> {
+    async fn iter_chunks(&self, _: &str) -> Result<ChunkStream<Self::ChunkId>, StorageError> {
         Ok(Box::pin(futures::stream::iter(
             self.iter_chunks_result
                 .clone()
                 .into_iter()
-                .map(|(id, res)| (id, res.map_err(|e| anyhow::anyhow!(e)))),
+                .map(|(id, res)| (id, res.map_err(|e| e))),
         )))
     }
 
@@ -419,7 +440,7 @@ impl Storage for SpyStorage {
         self.inner.upload_bytes(bytes).await
     }
 
-    async fn download_bytes(&self, hash: &str) -> Result<Bytes, StorageError> {
+    async fn download_bytes(&self, hash: &str) -> Result<ByteStream, StorageError> {
         self.download_bytes_calls
             .write()
             .unwrap()
@@ -427,7 +448,7 @@ impl Storage for SpyStorage {
         self.inner.download_bytes(hash).await
     }
 
-    async fn iter_chunks(&self, hash: &str) -> Result<ByteStream<Self::ChunkId>, StorageError> {
+    async fn iter_chunks(&self, hash: &str) -> Result<ChunkStream<Self::ChunkId>, StorageError> {
         self.iter_chunks_calls
             .write()
             .unwrap()
@@ -467,7 +488,11 @@ mod tests {
         let data = b"Hello, world!".to_vec();
         let hash = storage.upload_bytes(data.clone()).await?;
 
-        let downloaded = storage.download_bytes(&hash).await?;
+        let mut stream = storage.download_bytes(&hash).await?;
+        let mut downloaded = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            downloaded.extend_from_slice(&chunk?);
+        }
         assert_eq!(data, downloaded);
         Ok(())
     }
@@ -573,11 +598,11 @@ mod tests {
 
         assert_eq!(chunk_results.len(), 3, "Expected 3 chunk results");
 
-        for (index, (_, result)) in chunk_results.iter().enumerate() {
-            if index == fail_chunk_index as usize {
+        for (index, result) in chunk_results {
+            if index == fail_chunk_index {
                 assert!(result.is_err(), "Expected chunk {} to fail", index);
                 assert!(
-                    matches!(result, Err(e) if e.to_string() == "Simulated chunk failure"),
+                    matches!(&result, Err(StorageError::ChunkNotFound(index, _, _)) if index == "1"),
                     "Unexpected error for chunk {}: {:?}",
                     index,
                     result
@@ -596,7 +621,11 @@ mod tests {
         let data = vec![0u8; 10 * CHUNK_SIZE * CHUNK_SIZE]; // 10 MB
         let hash = storage.upload_bytes(data.clone()).await?;
 
-        let downloaded = storage.download_bytes(&hash).await?;
+        let mut stream = storage.download_bytes(&hash).await?;
+        let mut downloaded = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            downloaded.extend_from_slice(&chunk?);
+        }
         assert_eq!(data.len(), downloaded.len());
         assert_eq!(data, downloaded);
         Ok(())
@@ -608,7 +637,11 @@ mod tests {
         let data = vec![];
         let hash = storage.upload_bytes(data.clone()).await?;
 
-        let downloaded = storage.download_bytes(&hash).await?;
+        let mut stream = storage.download_bytes(&hash).await?;
+        let mut downloaded = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            downloaded.extend_from_slice(&chunk?);
+        }
         assert_eq!(data, downloaded);
         Ok(())
     }
@@ -626,16 +659,36 @@ mod tests {
 
         let hash1 = hash1?;
         let hash2 = hash2?;
-
         assert_ne!(hash1, hash2);
 
-        let (downloaded1, downloaded2) = tokio::join!(
+        let (stream1, stream2) = tokio::join!(
             storage.download_bytes(&hash1),
             storage.download_bytes(&hash2)
         );
 
-        assert_eq!(data1, downloaded1?);
-        assert_eq!(data2, downloaded2?);
+        // Collect chunks from both streams concurrently
+        let (chunks1, chunks2) = futures::future::join(
+            async {
+                let mut result = Vec::new();
+                let mut stream = stream1?;
+                while let Some(chunk) = stream.next().await {
+                    result.extend_from_slice(&chunk?);
+                }
+                Result::<Vec<u8>, StorageError>::Ok(result)
+            },
+            async {
+                let mut result = Vec::new();
+                let mut stream = stream2?;
+                while let Some(chunk) = stream.next().await {
+                    result.extend_from_slice(&chunk?);
+                }
+                Result::<Vec<u8>, StorageError>::Ok(result)
+            },
+        )
+        .await;
+
+        assert_eq!(data1, chunks1?);
+        assert_eq!(data2, chunks2?);
         Ok(())
     }
 

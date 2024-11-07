@@ -41,13 +41,19 @@
 //!     let data = b"Hello, world!".to_vec();
 //!     let hash = storage.upload_bytes(data.clone()).await?;
 //!
-//!     let downloaded = storage.download_bytes(&hash).await?;
+//!     // Download the data as a single blob
+//!     let mut stream = storage.download_bytes(&hash).await?;
+//!     let mut downloaded = Vec::with_capacity(stream.size_hint().0);
+//!     while let Some(chunk) = stream.next().await {
+//!         downloaded.extend_from_slice(&chunk?);
+//!     }
 //!     assert_eq!(data, downloaded);
 //!
-//!     let mut stream = storage.iter_chunks(&hash).await?;
-//!     while let Some((_, chunk_result)) = stream.next().await {
+//!     // Iterate through chunks
+//!     let mut chunk_stream = storage.iter_chunks(&hash).await?;
+//!     while let Some((chunk_id, chunk_result)) = chunk_stream.next().await {
 //!         let chunk = chunk_result?;
-//!         println!("Chunk: {:?}", chunk);
+//!         println!("Got chunk {}: {:?} bytes", chunk_id, chunk.len());
 //!     }
 //!
 //!     Ok(())

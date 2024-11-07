@@ -1004,10 +1004,12 @@ name = "entanglement_cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "cid",
  "clap",
  "clap-stdin",
  "entangler",
+ "futures",
  "serde",
  "serde_json",
  "stderrlog",

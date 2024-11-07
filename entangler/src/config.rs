@@ -1,4 +1,5 @@
 /// Configuration for the entangler.
+#[derive(Debug, Clone)]
 pub struct Config {
     /// The number of parity chunks to generate for each data chunk.
     pub alpha: u8,
