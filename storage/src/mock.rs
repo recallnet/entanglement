@@ -346,10 +346,7 @@ impl Storage for StubStorage {
 
     async fn iter_chunks(&self, _: &str) -> Result<ChunkStream<Self::ChunkId>, StorageError> {
         Ok(Box::pin(futures::stream::iter(
-            self.iter_chunks_result
-                .clone()
-                .into_iter()
-                .map(|(id, res)| (id, res.map_err(|e| e))),
+            self.iter_chunks_result.clone().into_iter(),
         )))
     }
 

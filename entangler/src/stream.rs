@@ -66,11 +66,12 @@ impl<T: Storage + Send + Sync + 'static> Stream for RepairingStream<T> {
 
                     let waker = cx.waker().clone();
                     let fut = Box::pin(fut);
-                    match futures::executor::block_on(async {
+                    let res = futures::executor::block_on(async {
                         let result = fut.await;
                         waker.wake_by_ref();
                         result
-                    }) {
+                    });
+                    match res {
                         Ok(stream) => {
                             this.inner =
                                 Box::pin(stream.map_err(|e| {

@@ -260,10 +260,7 @@ mod tests {
 
     async fn collect_chunks(storage: &IrohStorage, hash: &str) -> Result<Vec<Bytes>> {
         let stream = storage.iter_chunks(hash).await?;
-        let results: Vec<Result<Bytes, StorageError>> = stream
-            .map(|res| res.1)
-            .collect()
-            .await;
+        let results: Vec<Result<Bytes, StorageError>> = stream.map(|res| res.1).collect().await;
         let bytes_vec = results.into_iter().collect::<Result<Vec<_>, _>>()?;
         Ok(bytes_vec)
     }
