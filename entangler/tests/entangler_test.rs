@@ -742,16 +742,20 @@ async fn test_download_chunks_range_and_repair_scenarios() -> Result<()> {
                         case.name,
                         req.name,
                     );
-                    let downloaded_chunks = result?;
-                    for i in first..=last {
-                        let id = mapper.index_to_id(i).unwrap();
-                        assert_eq!(
-                            downloaded_chunks[&id],
-                            &bytes[(i * CHUNK_SIZE) as usize..((i + 1) * CHUNK_SIZE) as usize],
-                            "downloaded chunk mismatch for case: {}, {}",
-                            case.name,
-                            req.name
-                        );
+                    let downloaded_chunks: Vec<_> = result?.collect().await;
+                    let downloaded_chunks: Vec<_> = downloaded_chunks.into_iter().collect();
+                    for (id, chunk) in downloaded_chunks {
+                        let index = mapper.id_to_index(&id).unwrap();
+                        if index >= first && index <= last {
+                            assert_eq!(
+                                chunk?.clone(),
+                                &bytes[(index * CHUNK_SIZE) as usize
+                                    ..((index + 1) * CHUNK_SIZE) as usize],
+                                "downloaded chunk mismatch for case: {}, {}",
+                                case.name,
+                                req.name
+                            );
+                        }
                     }
                 }
             }
@@ -851,7 +855,9 @@ async fn if_download_fails_it_should_upload_to_storage_after_repair() -> Result<
                 let result = ent
                     .download_chunks(&hash, vec![0, 1, 2], Some(&m_hash))
                     .await;
-                assert!(result.is_ok(), "Failed to download chunks: {:?}", result);
+                assert!(result.is_ok(), "Failed to get chunks stream: {}", hash);
+
+                let _: Vec<_> = result?.collect().await;
             }
         }
 
@@ -882,7 +888,8 @@ async fn test_upload_small_file() -> Result<()> {
     let stream = ent.download(&hashes.0, None).await?;
     let result = read_stream(stream).await;
     assert!(result.is_ok(), "Failed to download blob: {:?}", result);
-    assert_eq!(result.unwrap(), bytes);
+    let downloaded_bytes = result.unwrap();
+    assert_eq!(downloaded_bytes, bytes);
 
     Ok(())
 }

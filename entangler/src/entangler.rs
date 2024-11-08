@@ -56,6 +56,8 @@ pub enum Error {
 
 pub type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, Error>> + Send>>;
 
+pub type ChunkStream<T> = Pin<Box<dyn Stream<Item = (T, Result<Bytes, Error>)> + Send>>;
+
 /// The `Entangler` struct is responsible for managing the entanglement process of data chunks.
 /// It interacts with a storage backend to upload and download data, and ensures data integrity
 /// through the use of parity chunks.
@@ -254,10 +256,12 @@ impl<T: Storage> Entangler<T> {
         }
 
         let chunks = self.download_chunks(hash, chunk_ids, metadata_hash).await?;
-        let mut buf = BytesMut::with_capacity(CHUNK_SIZE as usize * chunks.len());
+        let chunks_vec: Vec<_> = chunks.collect().await;
+        let chunks_map: HashMap<_, _> = chunks_vec.into_iter().collect();
+        let mut buf = BytesMut::with_capacity(CHUNK_SIZE as usize * chunks_map.len());
         for i in beg..index {
             let id = mapper.index_to_id(i)?;
-            buf.extend_from_slice(&chunks[&id]);
+            buf.extend_from_slice(chunks_map[&id].as_ref().unwrap());
         }
 
         Ok(buf.into())
@@ -285,7 +289,7 @@ impl<T: Storage> Entangler<T> {
         hash: &str,
         chunk_ids: Vec<T::ChunkId>,
         metadata_hash: Option<&str>,
-    ) -> Result<HashMap<T::ChunkId, Bytes>, Error> {
+    ) -> Result<ChunkStream<T::ChunkId>, Error> {
         let mut chunks = HashMap::new();
         let mut failed_chunks = Vec::new();
         let mut err: Option<StorageError> = None;
@@ -304,7 +308,9 @@ impl<T: Storage> Entangler<T> {
         }
 
         if err.is_none() {
-            return Ok(chunks);
+            return Ok(Box::pin(futures::stream::iter(
+                chunks.into_iter().map(|(id, chunk)| (id, Ok(chunk))),
+            )));
         }
 
         if metadata_hash.is_none() {
@@ -347,7 +353,9 @@ impl<T: Storage> Entangler<T> {
             }
         }
 
-        Ok(chunks)
+        Ok(Box::pin(futures::stream::iter(
+            chunks.into_iter().map(|(id, chunk)| (id, Ok(chunk))),
+        )))
     }
 
     pub(crate) async fn download_metadata(&self, metadata_hash: &str) -> Result<Metadata, Error> {
