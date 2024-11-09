@@ -710,21 +710,30 @@ async fn test_download_chunks_range_and_repair_scenarios() -> Result<()> {
                 };
 
                 if download_method == "range" {
-                    let result = ent
+                    let stream = ent
                         .download_range(&hashes.0, req.range, Some(&hashes.1))
                         .await;
                     assert!(
-                        result.is_ok(),
+                        stream.is_ok(),
+                        "expected download_range to return stream for case: {}, {}, but got: {:?}",
+                        case.name,
+                        req.name,
+                        stream.err().unwrap(),
+                    );
+                    let stream = stream?;
+                    let downloaded_bytes = read_stream(stream).await;
+                    assert!(
+                        downloaded_bytes.is_ok(),
                         "expected download_range to succeed for case: {}, {}, but got: {:?}",
                         case.name,
                         req.name,
-                        result.err().unwrap(),
+                        downloaded_bytes.err().unwrap(),
                     );
-                    let downloaded_bytes = result?;
                     let expected_bytes = bytes
                         .slice((first * CHUNK_SIZE) as usize..((last + 1) * CHUNK_SIZE) as usize);
                     assert_eq!(
-                        downloaded_bytes, expected_bytes,
+                        downloaded_bytes.unwrap(),
+                        expected_bytes,
                         "downloaded data mismatch for case: {}",
                         case.name
                     );
@@ -848,9 +857,11 @@ async fn if_download_fails_it_should_upload_to_storage_after_repair() -> Result<
                 assert!(result.is_ok(), "Failed to download blob: {:?}", result);
             }
             Method::Range => {
-                let result = ent
+                let stream = ent
                     .download_range(&hash, ChunkRange::From(0), Some(&m_hash))
                     .await;
+                assert!(stream.is_ok(), "Failed to get range stream: {}", hash);
+                let result = read_stream(stream.unwrap()).await;
                 assert!(result.is_ok(), "Failed to download range: {:?}", result);
             }
             Method::Chunks => {

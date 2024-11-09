@@ -17,7 +17,7 @@ use std::task::Context;
 /// 1. Download the metadata associated with the blob
 /// 2. Try to repair the entire blob using parity data
 /// 3. Return a new stream of the repaired data
-/// 
+///
 /// This stream ensures data integrity by automatically repairing corrupted chunks during streaming.
 pub struct RepairingStream<T: Storage + 'static> {
     entangler: Entangler<T>,
@@ -121,9 +121,9 @@ impl<T: Storage + 'static> Stream for RepairingStream<T> {
 ///    - Attempt to download the chunk again
 /// 2. If `always_repair` is false:
 ///    - Try to repair just the failed chunk
-/// 
+///
 /// # Type Parameters
-/// 
+///
 /// * `T` - The storage backend type that implements the `Storage` trait
 pub struct RepairingChunkStream<T: Storage + 'static> {
     entangler: Entangler<T>,

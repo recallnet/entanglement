@@ -45,7 +45,10 @@ pub fn wrap_error(err: anyhow::Error) -> ClonableError {
 }
 
 /// Trait used to identify chunks.
-pub trait ChunkId: Clone + Default + PartialEq + Eq + std::hash::Hash + Display + Send {}
+pub trait ChunkId:
+    Clone + Default + PartialEq + Eq + std::hash::Hash + Display + Send + Sync
+{
+}
 
 /// Type alias for a stream of bytes.
 pub type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, Error>> + Send>>;

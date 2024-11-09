@@ -237,7 +237,7 @@ impl<T: Storage> Entangler<T> {
         hash: &str,
         chunk_range: ChunkRange,
         metadata_hash: Option<&str>,
-    ) -> Result<Bytes, Error> {
+    ) -> Result<ByteStream, Error> {
         let (beg, end) = match chunk_range {
             ChunkRange::From(first) => (first, None),
             ChunkRange::Till(last) => (0, Some(last + 1)),
@@ -255,22 +255,15 @@ impl<T: Storage> Entangler<T> {
             }
         }
 
-        let stream = self
+        let chunk_stream = self
             .download_chunks(hash.to_string(), chunk_ids, metadata_hash)
             .await?;
-        let mut chunks: HashMap<_, _> = stream.collect().await;
-        let mut buf = BytesMut::with_capacity(CHUNK_SIZE as usize * chunks.len());
-        for i in beg..index {
-            let id = mapper.index_to_id(i)?;
-            if let Some(chunk) = chunks.remove(&id) {
-                match chunk {
-                    Ok(bytes) => buf.extend_from_slice(&bytes),
-                    Err(e) => return Err(e),
-                }
-            }
-        }
 
-        Ok(buf.into())
+        let byte_stream = chunk_stream.map(|item| match item {
+            (_, bytes) => bytes,
+        });
+
+        Ok(Box::pin(byte_stream))
     }
 
     /// Downloads the chunks with specific ids of the data identified by the given hash. If the data
