@@ -12,7 +12,7 @@ use storage::{self, ChunkIdMapper, Error as StorageError, Storage};
 use crate::executer;
 use crate::grid::{Grid, Positioner};
 use crate::repairer::{self, Repairer};
-use crate::stream::RepairingStream;
+use crate::stream::{RepairingChunkStream, RepairingStream};
 use crate::Config;
 use crate::Metadata;
 
@@ -63,8 +63,8 @@ pub type ChunkStream<T> = Pin<Box<dyn Stream<Item = (T, Result<Bytes, Error>)> +
 /// through the use of parity chunks.
 #[derive(Clone)]
 pub struct Entangler<T: Storage + 'static> {
-    storage: T,
-    config: Config,
+    pub(crate) storage: T,
+    pub(crate) config: Config,
 }
 
 /// Represents a range of chunks to download.
@@ -299,136 +299,26 @@ impl<T: Storage> Entangler<T> {
         if chunk_ids.is_empty() {
             return Err(Error::EmptyInput);
         }
-        if metadata_hash.is_none() {
+
+        if let Some(metadata_hash) = metadata_hash {
+            Ok(Box::pin(RepairingChunkStream::new(
+                self.clone(),
+                hash,
+                metadata_hash.to_string(),
+                chunk_ids,
+            )))
+        } else {
             Ok(Box::pin(futures::stream::unfold(
                 (chunk_ids, 0, hash, self.clone()),
                 |(chunk_ids, i, hash, ent)| async move {
                     if i < chunk_ids.len() {
                         let chunk_id = chunk_ids[i].clone();
-                        let chunk = match ent
+                        let result = ent
                             .storage
                             .download_chunk(&hash, chunk_id.clone())
                             .await
-                            .map_err(Error::from)
-                        {
-                            Ok(chunk) => chunk,
-                            Err(e) => {
-                                return Some(((chunk_id, Err(e)), (chunk_ids, i + 1, hash, ent)))
-                            }
-                        };
-                        Some(((chunk_id, Ok(chunk)), (chunk_ids, i + 1, hash, ent)))
-                    } else {
-                        None
-                    }
-                },
-            )))
-        } else {
-            Ok(Box::pin(futures::stream::unfold(
-                (
-                    chunk_ids,
-                    0,
-                    hash,
-                    metadata_hash.unwrap().to_string(),
-                    self.clone(),
-                ),
-                |(chunk_ids, i, hash, metadata_hash, ent)| async move {
-                    if i < chunk_ids.len() {
-                        let chunk_id = chunk_ids[i].clone();
-                        match ent.storage.download_chunk(&hash, chunk_id.clone()).await {
-                            Ok(chunk) => Some((
-                                (chunk_id, Ok(chunk)),
-                                (chunk_ids, i + 1, hash, metadata_hash, ent),
-                            )),
-                            Err(e) => {
-                                let metadata = match ent.download_metadata(&metadata_hash).await {
-                                    Ok(metadata) => metadata,
-                                    Err(e) => {
-                                        return Some((
-                                            (
-                                                chunk_id,
-                                                Err(Error::BlobDownload {
-                                                    hash: hash.to_string(),
-                                                    source: e.into(),
-                                                }),
-                                            ),
-                                            (chunk_ids, i + 1, hash, metadata_hash, ent),
-                                        ));
-                                    }
-                                };
-                                if ent.config.always_repair {
-                                    if let Err(e) = ent.download_repaired(&hash, metadata).await {
-                                        return Some((
-                                            (
-                                                chunk_id,
-                                                Err(Error::BlobDownload {
-                                                    hash: hash.to_string(),
-                                                    source: e.into(),
-                                                }),
-                                            ),
-                                            (chunk_ids, i + 1, hash, metadata_hash, ent),
-                                        ));
-                                    };
-
-                                    match ent.storage.download_chunk(&hash, chunk_id.clone()).await
-                                    {
-                                        Ok(chunk) => Some((
-                                            (chunk_id, Ok(chunk)),
-                                            (chunk_ids, i + 1, hash, metadata_hash, ent),
-                                        )),
-                                        Err(e) => {
-                                            return Some((
-                                                (
-                                                    chunk_id,
-                                                    Err(Error::BlobDownload {
-                                                        hash: hash.to_string(),
-                                                        source: e.into(),
-                                                    }),
-                                                ),
-                                                (chunk_ids, i + 1, hash, metadata_hash, ent),
-                                            ));
-                                        }
-                                    }
-                                } else {
-                                    let mapper = match ent.storage.chunk_id_mapper(&hash).await {
-                                        Ok(mapper) => mapper,
-                                        _ => {
-                                            return Some((
-                                                (
-                                                    chunk_id,
-                                                    Err(Error::BlobDownload {
-                                                        hash: hash.to_string(),
-                                                        source: e.into(),
-                                                    }),
-                                                ),
-                                                (chunk_ids, i + 1, hash, metadata_hash, ent),
-                                            ));
-                                        }
-                                    };
-                                    match ent
-                                        .repair_chunks(
-                                            metadata,
-                                            std::iter::once(chunk_id.clone()).collect(),
-                                            mapper,
-                                        )
-                                        .await
-                                    {
-                                        Ok(mut repaired_data) => Some((
-                                            (
-                                                chunk_id.clone(),
-                                                Ok(repaired_data.remove(&chunk_id).unwrap()),
-                                            ),
-                                            (chunk_ids, i + 1, hash, metadata_hash, ent),
-                                        )),
-                                        Err(e) => {
-                                            return Some((
-                                                (chunk_id, Err(e.into())),
-                                                (chunk_ids, i + 1, hash, metadata_hash, ent),
-                                            ));
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                            .map_err(Error::from);
+                        Some(((chunk_id.clone(), result), (chunk_ids, i + 1, hash, ent)))
                     } else {
                         None
                     }
@@ -505,7 +395,7 @@ impl<T: Storage> Entangler<T> {
         }
     }
 
-    async fn repair_chunks(
+    pub(crate) async fn repair_chunks(
         &self,
         metadata: Metadata,
         missing_indexes: Vec<T::ChunkId>,
