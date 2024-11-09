@@ -255,13 +255,19 @@ impl<T: Storage> Entangler<T> {
             }
         }
 
-        let chunks = self.download_chunks(hash, chunk_ids, metadata_hash).await?;
-        let chunks_vec: Vec<_> = chunks.collect().await;
-        let chunks_map: HashMap<_, _> = chunks_vec.into_iter().collect();
-        let mut buf = BytesMut::with_capacity(CHUNK_SIZE as usize * chunks_map.len());
+        let stream = self
+            .download_chunks(hash.to_string(), chunk_ids, metadata_hash)
+            .await?;
+        let mut chunks: HashMap<_, _> = stream.collect().await;
+        let mut buf = BytesMut::with_capacity(CHUNK_SIZE as usize * chunks.len());
         for i in beg..index {
             let id = mapper.index_to_id(i)?;
-            buf.extend_from_slice(chunks_map[&id].as_ref().unwrap());
+            if let Some(chunk) = chunks.remove(&id) {
+                match chunk {
+                    Ok(bytes) => buf.extend_from_slice(&bytes),
+                    Err(e) => return Err(e),
+                }
+            }
         }
 
         Ok(buf.into())
@@ -286,76 +292,149 @@ impl<T: Storage> Entangler<T> {
     /// The caller is responsible for ensuring that the chunks fit into the memory.
     pub async fn download_chunks(
         &self,
-        hash: &str,
+        hash: String,
         chunk_ids: Vec<T::ChunkId>,
         metadata_hash: Option<&str>,
     ) -> Result<ChunkStream<T::ChunkId>, Error> {
-        let mut chunks = HashMap::new();
-        let mut failed_chunks = Vec::new();
-        let mut err: Option<StorageError> = None;
-        for chunk_id in chunk_ids {
-            match self.storage.download_chunk(hash, chunk_id.clone()).await {
-                Ok(chunk) => {
-                    chunks.insert(chunk_id, chunk);
-                }
-                Err(e) => {
-                    if err.is_none() {
-                        err = Some(e);
-                    }
-                    failed_chunks.push(chunk_id);
-                }
-            }
+        if chunk_ids.is_empty() {
+            return Err(Error::EmptyInput);
         }
-
-        if err.is_none() {
-            return Ok(Box::pin(futures::stream::iter(
-                chunks.into_iter().map(|(id, chunk)| (id, Ok(chunk))),
-            )));
-        }
-
         if metadata_hash.is_none() {
-            return Err(Error::ChunksDownload {
-                hash: hash.to_string(),
-                chunks: failed_chunks.iter().map(|c| c.to_string()).collect(),
-                source: err.unwrap().into(),
-            });
-        }
-
-        let metadata = self.download_metadata(metadata_hash.unwrap()).await?;
-
-        if self.config.always_repair {
-            let ch_size = metadata.chunk_size as usize;
-            let mut stream = self.download_repaired(hash, metadata).await?;
-            let mut buffer = BytesMut::with_capacity(stream.size_hint().0);
-
-            while let Some(chunk) = stream.next().await {
-                buffer.extend_from_slice(&chunk?);
-            }
-
-            let mapper = self.storage.chunk_id_mapper(hash).await?;
-            for chunk_id in failed_chunks {
-                let index = mapper.id_to_index(&chunk_id)?;
-                let start = index as usize * ch_size;
-                let end = start + ch_size;
-                chunks.insert(chunk_id, Bytes::copy_from_slice(&buffer[start..end]));
-            }
+            Ok(Box::pin(futures::stream::unfold(
+                (chunk_ids, 0, hash, self.clone()),
+                |(chunk_ids, i, hash, ent)| async move {
+                    if i < chunk_ids.len() {
+                        let chunk_id = chunk_ids[i].clone();
+                        let chunk = match ent
+                            .storage
+                            .download_chunk(&hash, chunk_id.clone())
+                            .await
+                            .map_err(Error::from)
+                        {
+                            Ok(chunk) => chunk,
+                            Err(e) => {
+                                return Some(((chunk_id, Err(e)), (chunk_ids, i + 1, hash, ent)))
+                            }
+                        };
+                        Some(((chunk_id, Ok(chunk)), (chunk_ids, i + 1, hash, ent)))
+                    } else {
+                        None
+                    }
+                },
+            )))
         } else {
-            let repaired_data = self
-                .repair_chunks(
-                    metadata,
-                    failed_chunks,
-                    self.storage.chunk_id_mapper(hash).await?,
-                )
-                .await?;
+            Ok(Box::pin(futures::stream::unfold(
+                (
+                    chunk_ids,
+                    0,
+                    hash,
+                    metadata_hash.unwrap().to_string(),
+                    self.clone(),
+                ),
+                |(chunk_ids, i, hash, metadata_hash, ent)| async move {
+                    if i < chunk_ids.len() {
+                        let chunk_id = chunk_ids[i].clone();
+                        match ent.storage.download_chunk(&hash, chunk_id.clone()).await {
+                            Ok(chunk) => Some((
+                                (chunk_id, Ok(chunk)),
+                                (chunk_ids, i + 1, hash, metadata_hash, ent),
+                            )),
+                            Err(e) => {
+                                let metadata = match ent.download_metadata(&metadata_hash).await {
+                                    Ok(metadata) => metadata,
+                                    Err(e) => {
+                                        return Some((
+                                            (
+                                                chunk_id,
+                                                Err(Error::BlobDownload {
+                                                    hash: hash.to_string(),
+                                                    source: e.into(),
+                                                }),
+                                            ),
+                                            (chunk_ids, i + 1, hash, metadata_hash, ent),
+                                        ));
+                                    }
+                                };
+                                if ent.config.always_repair {
+                                    if let Err(e) = ent.download_repaired(&hash, metadata).await {
+                                        return Some((
+                                            (
+                                                chunk_id,
+                                                Err(Error::BlobDownload {
+                                                    hash: hash.to_string(),
+                                                    source: e.into(),
+                                                }),
+                                            ),
+                                            (chunk_ids, i + 1, hash, metadata_hash, ent),
+                                        ));
+                                    };
 
-            for (chunk_id, chunk) in repaired_data {
-                chunks.insert(chunk_id, chunk);
-            }
+                                    match ent.storage.download_chunk(&hash, chunk_id.clone()).await
+                                    {
+                                        Ok(chunk) => Some((
+                                            (chunk_id, Ok(chunk)),
+                                            (chunk_ids, i + 1, hash, metadata_hash, ent),
+                                        )),
+                                        Err(e) => {
+                                            return Some((
+                                                (
+                                                    chunk_id,
+                                                    Err(Error::BlobDownload {
+                                                        hash: hash.to_string(),
+                                                        source: e.into(),
+                                                    }),
+                                                ),
+                                                (chunk_ids, i + 1, hash, metadata_hash, ent),
+                                            ));
+                                        }
+                                    }
+                                } else {
+                                    let mapper = match ent.storage.chunk_id_mapper(&hash).await {
+                                        Ok(mapper) => mapper,
+                                        _ => {
+                                            return Some((
+                                                (
+                                                    chunk_id,
+                                                    Err(Error::BlobDownload {
+                                                        hash: hash.to_string(),
+                                                        source: e.into(),
+                                                    }),
+                                                ),
+                                                (chunk_ids, i + 1, hash, metadata_hash, ent),
+                                            ));
+                                        }
+                                    };
+                                    match ent
+                                        .repair_chunks(
+                                            metadata,
+                                            std::iter::once(chunk_id.clone()).collect(),
+                                            mapper,
+                                        )
+                                        .await
+                                    {
+                                        Ok(mut repaired_data) => Some((
+                                            (
+                                                chunk_id.clone(),
+                                                Ok(repaired_data.remove(&chunk_id).unwrap()),
+                                            ),
+                                            (chunk_ids, i + 1, hash, metadata_hash, ent),
+                                        )),
+                                        Err(e) => {
+                                            return Some((
+                                                (chunk_id, Err(e.into())),
+                                                (chunk_ids, i + 1, hash, metadata_hash, ent),
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        None
+                    }
+                },
+            )))
         }
-
-        Ok(Box::pin(futures::stream::iter(
-            chunks.into_iter().map(|(id, chunk)| (id, Ok(chunk))),
-        )))
     }
 
     pub(crate) async fn download_metadata(&self, metadata_hash: &str) -> Result<Metadata, Error> {

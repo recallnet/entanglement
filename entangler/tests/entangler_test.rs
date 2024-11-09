@@ -733,9 +733,7 @@ async fn test_download_chunks_range_and_repair_scenarios() -> Result<()> {
                     let chunks = (first..=last)
                         .map(|i| mapper.index_to_id(i).unwrap())
                         .collect();
-                    let result = ent
-                        .download_chunks(&hashes.0, chunks, Some(&hashes.1))
-                        .await;
+                    let result = ent.download_chunks(hashes.0, chunks, Some(&hashes.1)).await;
                     assert!(
                         result.is_ok(),
                         "expected download_chunks to succeed for case: {}, {}",
@@ -823,6 +821,10 @@ async fn if_download_fails_it_should_upload_to_storage_after_repair() -> Result<
     ];
 
     for t in test_cases {
+        println!(
+            "Running test case. Download method: {}. Always repair: {}, Expect upload: {}",
+            t.method, t.always_repair, t.expect_upload
+        );
         let bytes = create_bytes(NUM_CHUNKS);
 
         let storage = FakeStorage::new();
@@ -852,12 +854,27 @@ async fn if_download_fails_it_should_upload_to_storage_after_repair() -> Result<
                 assert!(result.is_ok(), "Failed to download range: {:?}", result);
             }
             Method::Chunks => {
-                let result = ent
-                    .download_chunks(&hash, vec![0, 1, 2], Some(&m_hash))
+                let ids = vec![0, 1, 2];
+                let stream = ent
+                    .download_chunks(hash.clone(), ids.clone(), Some(&m_hash))
                     .await;
-                assert!(result.is_ok(), "Failed to get chunks stream: {}", hash);
-
-                let _: Vec<_> = result?.collect().await;
+                assert!(stream.is_ok(), "Failed to get chunks stream: {}", hash);
+                let mut stream = stream.unwrap();
+                let mut index = 0;
+                while let Some((id, res)) = stream.next().await {
+                    assert!(
+                        res.is_ok(),
+                        "Failed to download chunk: {}. Err: {}",
+                        id,
+                        res.err().unwrap()
+                    );
+                    assert_eq!(
+                        ids[index], id,
+                        "Unexpected chunk id {} at pos {}",
+                        id, index
+                    );
+                    index += 1;
+                }
             }
         }
 

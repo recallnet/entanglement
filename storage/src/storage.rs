@@ -45,7 +45,7 @@ pub fn wrap_error(err: anyhow::Error) -> ClonableError {
 }
 
 /// Trait used to identify chunks.
-pub trait ChunkId: Clone + Default + PartialEq + Eq + std::hash::Hash + Display {}
+pub trait ChunkId: Clone + Default + PartialEq + Eq + std::hash::Hash + Display + Send {}
 
 /// Type alias for a stream of bytes.
 pub type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, Error>> + Send>>;
@@ -57,7 +57,7 @@ pub type ChunkStream<T> = Pin<Box<dyn Stream<Item = (T, Result<Bytes, Error>)> +
 ///
 /// The methods in this trait can be called multiple times with the same arguments so
 /// the implementation should be idempotent and probably cache the results.
-pub trait ChunkIdMapper<T: ChunkId>: Clone {
+pub trait ChunkIdMapper<T: ChunkId>: Clone + Send {
     /// Returns a chunk id corresponding to the given index.
     fn index_to_id(&self, index: u64) -> Result<T, Error>;
     /// Returns the index corresponding to the given chunk id.

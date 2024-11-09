@@ -42,6 +42,8 @@ impl FakeStorage {
     }
 
     /// Simulate a failure for a specific chunk of a blob.
+    ///
+    /// This state is being reset after a subsequent upload of the same blob.
     pub fn fake_failed_chunks(&self, hash: &str, chunks: Vec<u64>) {
         self.fail_chunks
             .lock()
@@ -50,6 +52,8 @@ impl FakeStorage {
     }
 
     /// Simulate a failure for a specific blob.
+    ///
+    /// This state is being reset after a subsequent upload of the same blob.
     pub fn fake_failed_download(&self, hash: &str) {
         self.fail_blobs
             .lock()
@@ -113,6 +117,7 @@ impl Storage for FakeStorage {
         self.data.lock().unwrap().insert(hash_str.clone(), chunks);
 
         self.fail_blobs.lock().unwrap().remove(&hash_str);
+        self.fail_chunks.lock().unwrap().remove(&hash_str);
 
         Ok(hash_str)
     }
@@ -514,7 +519,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_fake_failed_download_after_upload_available() -> Result<()> {
+    async fn faked_failed_blob_download_after_upload_should_be_available() -> Result<()> {
+        let storage = FakeStorage::new();
+        let data = b"Test data".to_vec();
+        let hash = storage.upload_bytes(data.clone()).await?;
+
+        let result = storage.download_bytes(&hash).await;
+        assert!(result.is_ok());
+
+        storage.fake_failed_chunks(&hash, vec![0]);
+        storage.upload_bytes(data).await?;
+
+        let result = storage.download_chunk(&hash, 0).await;
+        assert!(result.is_ok(), "Expected download to succeed after upload");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn faked_failed_chunk_download_after_upload_should_be_available() -> Result<()> {
         let storage = FakeStorage::new();
         let data = b"Test data".to_vec();
         let hash = storage.upload_bytes(data.clone()).await?;
