@@ -1,10 +1,11 @@
 // Copyright 2024 Entanglement Contributors
 // SPDX-License-Identifier: Apache-2.0, MIT
 
-use crate::entangler::{Entangler, Error, CHUNK_SIZE};
+use crate::entangler::{ByteStream, Entangler, Error, CHUNK_SIZE};
 use bytes::{Bytes, BytesMut};
 use storage::{self, Error as StorageError, Storage};
 
+use futures::future::Future;
 use futures::ready;
 use futures::task::Poll;
 use futures::Stream;
@@ -20,11 +21,12 @@ use std::task::Context;
 ///
 /// This stream ensures data integrity by automatically repairing corrupted chunks during streaming.
 pub struct RepairingStream<T: Storage + 'static> {
+    inner: storage::ByteStream,
+    buffer: BytesMut,
+    repair_future: Option<Pin<Box<dyn Future<Output = Result<ByteStream, Error>> + Send>>>,
     entangler: Entangler<T>,
     hash: String,
     metadata_hash: String,
-    inner: storage::ByteStream,
-    buffer: BytesMut,
 }
 
 impl<T: Storage + 'static> RepairingStream<T> {
@@ -52,6 +54,7 @@ impl<T: Storage + 'static> RepairingStream<T> {
             metadata_hash,
             inner,
             buffer: BytesMut::new(),
+            repair_future: None,
         }
     }
 }
@@ -60,55 +63,57 @@ impl<T: Storage + 'static> Stream for RepairingStream<T> {
     type Item = Result<Bytes, Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        // this is safe because we never move the inner stream
         let this = unsafe { self.get_unchecked_mut() };
 
-        loop {
-            match ready!(this.inner.as_mut().poll_next(cx)) {
-                Some(Ok(chunk)) => {
-                    this.buffer.extend_from_slice(&chunk);
-                    if this.buffer.len() >= CHUNK_SIZE as usize {
-                        let chunk = this.buffer.split_to(CHUNK_SIZE as usize).freeze();
-                        return Poll::Ready(Some(Ok(chunk)));
-                    }
+        // First, try to make progress on repair if it's in progress
+        if let Some(fut) = &mut this.repair_future {
+            match fut.as_mut().poll(cx) {
+                Poll::Ready(Ok(new_stream)) => {
+                    this.inner = Box::pin(
+                        new_stream.map_err(|e| StorageError::Other(storage::wrap_error(e.into()))),
+                    );
+                    this.repair_future = None;
                 }
-                Some(Err(_)) => {
+                Poll::Ready(Err(e)) => {
+                    this.repair_future = None;
+                    return Poll::Ready(Some(Err(e)));
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+
+        // Then continue with normal stream processing
+        match ready!(this.inner.as_mut().poll_next(cx)) {
+            Some(Ok(chunk)) => {
+                this.buffer.extend_from_slice(&chunk);
+                if this.buffer.len() >= CHUNK_SIZE as usize {
+                    let chunk = this.buffer.split_to(CHUNK_SIZE as usize).freeze();
+                    return Poll::Ready(Some(Ok(chunk)));
+                } else {
+                    return Poll::Pending;
+                }
+            }
+            Some(Err(_)) => {
+                // Start repair process
+                let fut = {
                     let entangler = this.entangler.clone();
                     let hash = this.hash.clone();
                     let metadata_hash = this.metadata_hash.clone();
 
-                    let fut = async move {
+                    async move {
                         let metadata = entangler.download_metadata(&metadata_hash).await?;
-                        let repaired_stream = entangler.download_repaired(&hash, metadata).await?;
-                        Ok(repaired_stream)
-                    };
-
-                    let waker = cx.waker().clone();
-                    let fut = Box::pin(fut);
-                    let res = futures::executor::block_on(async {
-                        let result = fut.await;
-                        waker.wake_by_ref();
-                        result
-                    });
-                    match res {
-                        Ok(stream) => {
-                            this.inner =
-                                Box::pin(stream.map_err(|e| {
-                                    StorageError::Other(storage::wrap_error(e.into()))
-                                }));
-                        }
-                        Err(e) => {
-                            return Poll::Ready(Some(Err(e)));
-                        }
+                        entangler.download_repaired(&hash, metadata).await
                     }
-                }
-                None => {
-                    if !this.buffer.is_empty() {
-                        let chunk = this.buffer.split().freeze();
-                        return Poll::Ready(Some(Ok(chunk)));
-                    } else {
-                        return Poll::Ready(None);
-                    }
+                };
+                this.repair_future = Some(Box::pin(fut));
+                return Poll::Pending;
+            }
+            None => {
+                if !this.buffer.is_empty() {
+                    let chunk = this.buffer.split().freeze();
+                    return Poll::Ready(Some(Ok(chunk)));
+                } else {
+                    return Poll::Ready(None);
                 }
             }
         }
