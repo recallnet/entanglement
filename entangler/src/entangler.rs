@@ -255,13 +255,9 @@ impl<T: Storage> Entangler<T> {
             }
         }
 
-        let chunk_stream = self
-            .download_chunks(hash.to_string(), chunk_ids, metadata_hash)
-            .await?;
+        let chunk_stream = self.download_chunks(hash.to_string(), chunk_ids, metadata_hash)?;
 
-        let byte_stream = chunk_stream.map(|item| match item {
-            (_, bytes) => bytes,
-        });
+        let byte_stream = chunk_stream.map(|(_, bytes)| bytes);
 
         Ok(Box::pin(byte_stream))
     }
@@ -283,7 +279,7 @@ impl<T: Storage> Entangler<T> {
     /// # Note
     ///
     /// The caller is responsible for ensuring that the chunks fit into the memory.
-    pub async fn download_chunks(
+    pub fn download_chunks(
         &self,
         hash: String,
         chunk_ids: Vec<T::ChunkId>,

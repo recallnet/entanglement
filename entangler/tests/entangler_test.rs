@@ -742,7 +742,7 @@ async fn test_download_chunks_range_and_repair_scenarios() -> Result<()> {
                     let chunks = (first..=last)
                         .map(|i| mapper.index_to_id(i).unwrap())
                         .collect();
-                    let result = ent.download_chunks(hashes.0, chunks, Some(&hashes.1)).await;
+                    let result = ent.download_chunks(hashes.0, chunks, Some(&hashes.1));
                     assert!(
                         result.is_ok(),
                         "expected download_chunks to succeed for case: {}, {}",
@@ -866,9 +866,7 @@ async fn if_download_fails_it_should_upload_to_storage_after_repair() -> Result<
             }
             Method::Chunks => {
                 let ids = vec![0, 1, 2];
-                let stream = ent
-                    .download_chunks(hash.clone(), ids.clone(), Some(&m_hash))
-                    .await;
+                let stream = ent.download_chunks(hash.clone(), ids.clone(), Some(&m_hash));
                 assert!(stream.is_ok(), "Failed to get chunks stream: {}", hash);
                 let mut stream = stream.unwrap();
                 let mut index = 0;

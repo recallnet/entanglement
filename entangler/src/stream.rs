@@ -238,7 +238,7 @@ impl<T: Storage + 'static> Stream for RepairingChunkStream<T> {
                                 chunk_id.clone(),
                                 Ok(repaired_data.remove(&chunk_id).unwrap()),
                             )),
-                            Err(e) => Ok((chunk_id.clone(), Err(e.into()))),
+                            Err(e) => Ok((chunk_id.clone(), Err(e))),
                         }
                     }
                 }
@@ -247,11 +247,12 @@ impl<T: Storage + 'static> Stream for RepairingChunkStream<T> {
 
         let waker = cx.waker().clone();
         let fut = Box::pin(fut);
-        match futures::executor::block_on(async {
+        let async_call = futures::executor::block_on(async {
             let result = fut.await;
             waker.wake_by_ref();
             result
-        }) {
+        });
+        match async_call {
             Ok((chunk_id, result)) => Poll::Ready(Some((chunk_id, result))),
             Err(e) => Poll::Ready(Some((chunk_id, Err(e)))),
         }
