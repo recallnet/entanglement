@@ -711,7 +711,7 @@ async fn test_download_chunks_range_and_repair_scenarios() -> Result<()> {
 
                 if download_method == "range" {
                     let stream = ent
-                        .download_range(&hashes.0, req.range, Some(&hashes.1))
+                        .download_range(&hashes.0, req.range, Some(hashes.1))
                         .await;
                     assert!(
                         stream.is_ok(),
@@ -742,7 +742,7 @@ async fn test_download_chunks_range_and_repair_scenarios() -> Result<()> {
                     let chunks = (first..=last)
                         .map(|i| mapper.index_to_id(i).unwrap())
                         .collect();
-                    let result = ent.download_chunks(hashes.0, chunks, Some(&hashes.1));
+                    let result = ent.download_chunks(hashes.0, chunks, Some(hashes.1));
                     assert!(
                         result.is_ok(),
                         "expected download_chunks to succeed for case: {}, {}",
@@ -858,7 +858,7 @@ async fn if_download_fails_it_should_upload_to_storage_after_repair() -> Result<
             }
             Method::Range => {
                 let stream = ent
-                    .download_range(&hash, ChunkRange::From(0), Some(&m_hash))
+                    .download_range(&hash, ChunkRange::From(0), Some(m_hash))
                     .await;
                 assert!(stream.is_ok(), "Failed to get range stream: {}", hash);
                 let result = read_stream(stream.unwrap()).await;
@@ -866,7 +866,7 @@ async fn if_download_fails_it_should_upload_to_storage_after_repair() -> Result<
             }
             Method::Chunks => {
                 let ids = vec![0, 1, 2];
-                let stream = ent.download_chunks(hash.clone(), ids.clone(), Some(&m_hash));
+                let stream = ent.download_chunks(hash.clone(), ids.clone(), Some(m_hash));
                 assert!(stream.is_ok(), "Failed to get chunks stream: {}", hash);
                 let mut stream = stream.unwrap();
                 let mut index = 0;

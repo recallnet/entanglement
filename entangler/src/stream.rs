@@ -60,6 +60,7 @@ impl<T: Storage + 'static> Stream for RepairingStream<T> {
     type Item = Result<Bytes, Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        // this is safe because we never move the inner stream
         let this = unsafe { self.get_unchecked_mut() };
 
         loop {
@@ -79,7 +80,7 @@ impl<T: Storage + 'static> Stream for RepairingStream<T> {
                     let fut = async move {
                         let metadata = entangler.download_metadata(&metadata_hash).await?;
                         let repaired_stream = entangler.download_repaired(&hash, metadata).await?;
-                        Ok::<_, Error>(repaired_stream)
+                        Ok(repaired_stream)
                     };
 
                     let waker = cx.waker().clone();
@@ -166,6 +167,7 @@ impl<T: Storage + 'static> Stream for RepairingChunkStream<T> {
     type Item = (T::ChunkId, Result<Bytes, Error>);
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        // this is safe because we never move the inner stream
         let this = unsafe { self.get_unchecked_mut() };
 
         if this.current_index >= this.chunk_ids.len() {

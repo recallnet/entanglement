@@ -217,7 +217,7 @@ impl<T: Storage> Entangler<T> {
         }
     }
 
-    /// Downloads a range of chunks of the data identified by the given hash. If the data is
+    /// Downloads a range of chunks of the data identified by the given hash as a stream. If the data is
     /// corrupted, it attempts to repair the data using the parity blobs identified by the metadata
     /// hash.
     ///
@@ -229,14 +229,14 @@ impl<T: Storage> Entangler<T> {
     ///
     /// # Returns
     ///
-    /// The downloaded data.
+    /// A `Result` containing a stream of the downloaded bytes.
     ///
     /// See [ChunkRange] for more information on the range of chunks.
     pub async fn download_range(
         &self,
         hash: &str,
         chunk_range: ChunkRange,
-        metadata_hash: Option<&str>,
+        metadata_hash: Option<String>,
     ) -> Result<ByteStream, Error> {
         let (beg, end) = match chunk_range {
             ChunkRange::From(first) => (first, None),
@@ -262,7 +262,7 @@ impl<T: Storage> Entangler<T> {
         Ok(Box::pin(byte_stream))
     }
 
-    /// Downloads the chunks with specific ids of the data identified by the given hash. If the data
+    /// Downloads the chunks with specific ids of the data identified by the given hash as a stream. If the data
     /// is corrupted, it attempts to repair the data using the parity blobs identified by the
     /// metadata hash.
     ///
@@ -274,7 +274,7 @@ impl<T: Storage> Entangler<T> {
     ///
     /// # Returns
     ///
-    /// A map of chunk ids to the downloaded data.
+    /// A `Result` containing a stream of chunk ids and the downloaded data.
     ///
     /// # Note
     ///
@@ -283,7 +283,7 @@ impl<T: Storage> Entangler<T> {
         &self,
         hash: String,
         chunk_ids: Vec<T::ChunkId>,
-        metadata_hash: Option<&str>,
+        metadata_hash: Option<String>,
     ) -> Result<ChunkStream<T::ChunkId>, Error> {
         if chunk_ids.is_empty() {
             return Err(Error::EmptyInput);
@@ -293,7 +293,7 @@ impl<T: Storage> Entangler<T> {
             Ok(Box::pin(RepairingChunkStream::new(
                 self.clone(),
                 hash,
-                metadata_hash.to_string(),
+                metadata_hash,
                 chunk_ids,
             )))
         } else {
@@ -307,7 +307,7 @@ impl<T: Storage> Entangler<T> {
                             .download_chunk(&hash, chunk_id.clone())
                             .await
                             .map_err(Error::from);
-                        Some(((chunk_id.clone(), result), (chunk_ids, i + 1, hash, ent)))
+                        Some(((chunk_id, result), (chunk_ids, i + 1, hash, ent)))
                     } else {
                         None
                     }
