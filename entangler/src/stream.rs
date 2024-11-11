@@ -13,6 +13,8 @@ use futures::TryStreamExt;
 use std::pin::Pin;
 use std::task::Context;
 
+type ByteStreamFuture = Pin<Box<dyn Future<Output = Result<ByteStream, Error>> + Send>>;
+
 /// A stream that wraps another stream and handles the repair process if a chunk fails during download.
 /// If a chunk fails to download, the stream will:
 /// 1. Download the metadata associated with the blob
@@ -23,7 +25,7 @@ use std::task::Context;
 pub struct RepairingStream<T: Storage + 'static> {
     inner: storage::ByteStream,
     buffer: BytesMut,
-    repair_future: Option<Pin<Box<dyn Future<Output = Result<ByteStream, Error>> + Send>>>,
+    repair_future: Option<ByteStreamFuture>,
     entangler: Entangler<T>,
     hash: String,
     metadata_hash: String,
@@ -106,7 +108,7 @@ impl<T: Storage + 'static> Stream for RepairingStream<T> {
                     }
                 };
                 this.repair_future = Some(Box::pin(fut));
-                return Poll::Pending;
+                Poll::Pending
             }
             None => {
                 if !this.buffer.is_empty() {
@@ -119,6 +121,9 @@ impl<T: Storage + 'static> Stream for RepairingStream<T> {
         }
     }
 }
+
+type ChunkStreamFuture<T> =
+    Pin<Box<dyn Future<Output = Result<(T, Result<Bytes, Error>), Error>> + Send>>;
 
 /// A stream that downloads chunks individually and attempts to repair them if they fail to download.
 /// If a chunk fails to download, the stream will:
@@ -137,9 +142,7 @@ pub struct RepairingChunkStream<T: Storage + 'static> {
     metadata_hash: String,
     chunk_ids: Vec<T::ChunkId>,
     current_index: usize,
-    current_future: Option<
-        Pin<Box<dyn Future<Output = Result<(T::ChunkId, Result<Bytes, Error>), Error>> + Send>>,
-    >,
+    current_future: Option<ChunkStreamFuture<T::ChunkId>>,
 }
 
 impl<T: Storage + 'static> RepairingChunkStream<T> {
@@ -172,11 +175,7 @@ impl<T: Storage + 'static> RepairingChunkStream<T> {
     }
 
     // Extract future creation into a separate method
-    fn create_download_future(
-        &self,
-        chunk_id: T::ChunkId,
-    ) -> Pin<Box<dyn Future<Output = Result<(T::ChunkId, Result<Bytes, Error>), Error>> + Send>>
-    {
+    fn create_download_future(&self, chunk_id: T::ChunkId) -> ChunkStreamFuture<T::ChunkId> {
         let entangler = self.entangler.clone();
         let hash = self.hash.clone();
         let metadata_hash = self.metadata_hash.clone();
