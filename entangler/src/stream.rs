@@ -88,9 +88,9 @@ impl<T: Storage + 'static> Stream for RepairingStream<T> {
                 this.buffer.extend_from_slice(&chunk);
                 if this.buffer.len() >= CHUNK_SIZE as usize {
                     let chunk = this.buffer.split_to(CHUNK_SIZE as usize).freeze();
-                    return Poll::Ready(Some(Ok(chunk)));
+                    Poll::Ready(Some(Ok(chunk)))
                 } else {
-                    return Poll::Pending;
+                    Poll::Pending
                 }
             }
             Some(Err(_)) => {
@@ -111,9 +111,9 @@ impl<T: Storage + 'static> Stream for RepairingStream<T> {
             None => {
                 if !this.buffer.is_empty() {
                     let chunk = this.buffer.split().freeze();
-                    return Poll::Ready(Some(Ok(chunk)));
+                    Poll::Ready(Some(Ok(chunk)))
                 } else {
-                    return Poll::Ready(None);
+                    Poll::Ready(None)
                 }
             }
         }
@@ -137,6 +137,9 @@ pub struct RepairingChunkStream<T: Storage + 'static> {
     metadata_hash: String,
     chunk_ids: Vec<T::ChunkId>,
     current_index: usize,
+    current_future: Option<
+        Pin<Box<dyn Future<Output = Result<(T::ChunkId, Result<Bytes, Error>), Error>> + Send>>,
+    >,
 }
 
 impl<T: Storage + 'static> RepairingChunkStream<T> {
@@ -164,7 +167,80 @@ impl<T: Storage + 'static> RepairingChunkStream<T> {
             metadata_hash,
             chunk_ids,
             current_index: 0,
+            current_future: None,
         }
+    }
+
+    // Extract future creation into a separate method
+    fn create_download_future(
+        &self,
+        chunk_id: T::ChunkId,
+    ) -> Pin<Box<dyn Future<Output = Result<(T::ChunkId, Result<Bytes, Error>), Error>> + Send>>
+    {
+        let entangler = self.entangler.clone();
+        let hash = self.hash.clone();
+        let metadata_hash = self.metadata_hash.clone();
+
+        Box::pin(async move {
+            match entangler
+                .storage
+                .download_chunk(&hash, chunk_id.clone())
+                .await
+            {
+                Ok(chunk) => Ok((chunk_id, Ok(chunk))),
+                Err(e) => {
+                    let metadata = entangler.download_metadata(&metadata_hash).await?;
+                    if entangler.config.always_repair {
+                        // Try to repair and upload the whole blob
+                        if let Err(e) = entangler.download_repaired(&hash, metadata).await {
+                            return Ok((
+                                chunk_id.clone(),
+                                Err(Error::BlobDownload {
+                                    hash: hash.clone(),
+                                    source: e.into(),
+                                }),
+                            ));
+                        }
+                        // Try downloading again after repair
+                        match entangler
+                            .storage
+                            .download_chunk(&hash, chunk_id.clone())
+                            .await
+                        {
+                            Ok(chunk) => Ok((chunk_id, Ok(chunk))),
+                            Err(e) => Ok((
+                                chunk_id,
+                                Err(Error::BlobDownload {
+                                    hash,
+                                    source: e.into(),
+                                }),
+                            )),
+                        }
+                    } else {
+                        let mapper =
+                            entangler
+                                .storage
+                                .chunk_id_mapper(&hash)
+                                .await
+                                .map_err(|_| Error::BlobDownload {
+                                    hash: hash.clone(),
+                                    source: e.into(),
+                                })?;
+
+                        let mut repaired_data = entangler
+                            .repair_chunks(metadata, vec![chunk_id.clone()], mapper)
+                            .await?;
+
+                        Ok((
+                            chunk_id.clone(),
+                            repaired_data.remove(&chunk_id).map(Ok).unwrap_or_else(|| {
+                                Err(Error::Other(anyhow::anyhow!("Chunk repair failed")))
+                            }),
+                        ))
+                    }
+                }
+            }
+        })
     }
 }
 
@@ -172,96 +248,31 @@ impl<T: Storage + 'static> Stream for RepairingChunkStream<T> {
     type Item = (T::ChunkId, Result<Bytes, Error>);
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        // this is safe because we never move the inner stream
         let this = unsafe { self.get_unchecked_mut() };
 
         if this.current_index >= this.chunk_ids.len() {
             return Poll::Ready(None);
         }
 
-        let chunk_id = this.chunk_ids[this.current_index].clone();
-        this.current_index += 1;
-
-        let fut = async {
-            match this
-                .entangler
-                .storage
-                .download_chunk(&this.hash, chunk_id.clone())
-                .await
-            {
-                Ok(chunk) => Ok((chunk_id.clone(), Ok(chunk))),
-                Err(e) => {
-                    let metadata = this
-                        .entangler
-                        .download_metadata(&this.metadata_hash)
-                        .await?;
-
-                    if this.entangler.config.always_repair {
-                        // Try to repair and upload the whole blob
-                        if let Err(e) = this.entangler.download_repaired(&this.hash, metadata).await
-                        {
-                            return Ok((
-                                chunk_id.clone(),
-                                Err(Error::BlobDownload {
-                                    hash: this.hash.clone(),
-                                    source: e.into(),
-                                }),
-                            ));
-                        }
-                        // Try downloading again after repair
-                        match this
-                            .entangler
-                            .storage
-                            .download_chunk(&this.hash, chunk_id.clone())
-                            .await
-                        {
-                            Ok(chunk) => Ok((chunk_id.clone(), Ok(chunk))),
-                            Err(e) => Ok((
-                                chunk_id.clone(),
-                                Err(Error::BlobDownload {
-                                    hash: this.hash.clone(),
-                                    source: e.into(),
-                                }),
-                            )),
-                        }
-                    } else {
-                        // Try to repair just this chunk
-                        let mapper = this
-                            .entangler
-                            .storage
-                            .chunk_id_mapper(&this.hash)
-                            .await
-                            .map_err(|_| Error::BlobDownload {
-                                hash: this.hash.clone(),
-                                source: e.into(),
-                            })?;
-
-                        match this
-                            .entangler
-                            .repair_chunks(metadata, vec![chunk_id.clone()], mapper)
-                            .await
-                        {
-                            Ok(mut repaired_data) => Ok((
-                                chunk_id.clone(),
-                                Ok(repaired_data.remove(&chunk_id).unwrap()),
-                            )),
-                            Err(e) => Ok((chunk_id.clone(), Err(e))),
-                        }
-                    }
-                }
-            }
+        // Poll existing future or create a new one
+        let fut = if let Some(fut) = this.current_future.as_mut() {
+            fut
+        } else {
+            let chunk_id = this.chunk_ids[this.current_index].clone();
+            this.current_future = Some(this.create_download_future(chunk_id));
+            this.current_future.as_mut().unwrap()
         };
 
-        let waker = cx.waker().clone();
-        let fut = Box::pin(fut);
-        let async_call = futures::executor::block_on(async {
-            let result = fut.await;
-            waker.wake_by_ref();
-            result
-        });
-        match async_call {
-            Ok((chunk_id, result)) => Poll::Ready(Some((chunk_id, result))),
-            Err(e) => Poll::Ready(Some((chunk_id, Err(e)))),
+        match fut.as_mut().poll(cx) {
+            Poll::Ready(result) => {
+                this.current_future = None;
+                this.current_index += 1;
+                Poll::Ready(Some(match result {
+                    Ok((chunk_id, res)) => (chunk_id, res),
+                    Err(e) => (this.chunk_ids[this.current_index - 1].clone(), Err(e)),
+                }))
+            }
+            Poll::Pending => Poll::Pending,
         }
     }
 }
