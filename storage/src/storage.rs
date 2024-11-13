@@ -45,16 +45,22 @@ pub fn wrap_error(err: anyhow::Error) -> ClonableError {
 }
 
 /// Trait used to identify chunks.
-pub trait ChunkId: Clone + Default + PartialEq + Eq + std::hash::Hash + Display {}
+pub trait ChunkId:
+    Clone + Default + PartialEq + Eq + std::hash::Hash + Display + Send + Sync
+{
+}
 
-/// Type alias for a stream of chunks.
-pub type ByteStream<T> = Pin<Box<dyn Stream<Item = (T, Result<Bytes>)> + Send>>;
+/// Type alias for a stream of bytes.
+pub type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, Error>> + Send>>;
+
+/// Type alias for a stream of chunks with associated chunk IDs.
+pub type ChunkStream<T> = Pin<Box<dyn Stream<Item = (T, Result<Bytes, Error>)> + Send>>;
 
 /// Trait for mapping chunk indices to chunk ids and vice versa.
 ///
 /// The methods in this trait can be called multiple times with the same arguments so
 /// the implementation should be idempotent and probably cache the results.
-pub trait ChunkIdMapper<T: ChunkId>: Clone {
+pub trait ChunkIdMapper<T: ChunkId>: Clone + Send {
     /// Returns a chunk id corresponding to the given index.
     fn index_to_id(&self, index: u64) -> Result<T, Error>;
     /// Returns the index corresponding to the given chunk id.
@@ -63,7 +69,7 @@ pub trait ChunkIdMapper<T: ChunkId>: Clone {
 
 /// Trait representing a storage backend.
 #[async_trait]
-pub trait Storage: Send + Clone {
+pub trait Storage: Send + Sync + Clone {
     type ChunkId: ChunkId;
     type ChunkIdMapper: ChunkIdMapper<Self::ChunkId>;
 
@@ -78,7 +84,7 @@ pub trait Storage: Send + Clone {
     /// A `Result` containing the hash of the uploaded data, or an error if the upload fails.
     async fn upload_bytes(&self, bytes: impl Into<Bytes> + Send) -> Result<String, Error>;
 
-    /// Downloads the bytes identified by the given hash.
+    /// Downloads the bytes identified by the given hash as a stream of bytes.
     ///
     /// # Arguments
     ///
@@ -86,8 +92,8 @@ pub trait Storage: Send + Clone {
     ///
     /// # Returns
     ///
-    /// A `Result` containing the downloaded bytes, or an `Error` if the download fails.
-    async fn download_bytes(&self, hash: &str) -> Result<Bytes, Error>;
+    /// A `Result` containing a stream of the downloaded bytes, or an `Error` if the download fails.
+    async fn download_bytes(&self, hash: &str) -> Result<ByteStream, Error>;
 
     /// Returns a stream of chunks for the data identified by the given hash.
     ///
@@ -98,7 +104,7 @@ pub trait Storage: Send + Clone {
     /// # Returns
     ///
     /// A `Result` containing a stream of chunks, or an `Error` if the operation fails.
-    async fn iter_chunks(&self, hash: &str) -> Result<ByteStream<Self::ChunkId>, Error>;
+    async fn iter_chunks(&self, hash: &str) -> Result<ChunkStream<Self::ChunkId>, Error>;
 
     /// Downloads the chunk identified by the given hash and chunk id.
     ///

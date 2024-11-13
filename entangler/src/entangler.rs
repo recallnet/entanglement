@@ -3,17 +3,20 @@
 
 use anyhow::Result;
 use bytes::{Bytes, BytesMut};
-use futures::StreamExt;
+use futures::TryStreamExt;
+use futures::{Stream, StreamExt};
 use std::collections::HashMap;
-use storage::{ByteStream, ChunkIdMapper, Error as StorageError, Storage};
+use std::pin::Pin;
+use storage::{self, ChunkIdMapper, Error as StorageError, Storage};
 
 use crate::executer;
 use crate::grid::{Grid, Positioner};
 use crate::repairer::{self, Repairer};
+use crate::stream::{RepairingChunkStream, RepairingStream};
 use crate::Config;
 use crate::Metadata;
 
-const CHUNK_SIZE: u64 = 1024;
+pub const CHUNK_SIZE: u64 = 1024;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -51,24 +54,41 @@ pub enum Error {
     Repair(#[from] repairer::Error),
 }
 
+pub type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, Error>> + Send>>;
+
+pub type ChunkStream<T> = Pin<Box<dyn Stream<Item = (T, Result<Bytes, Error>)> + Send>>;
+
 /// The `Entangler` struct is responsible for managing the entanglement process of data chunks.
 /// It interacts with a storage backend to upload and download data, and ensures data integrity
 /// through the use of parity chunks.
-pub struct Entangler<T: Storage> {
-    storage: T,
-    config: Config,
+#[derive(Clone)]
+pub struct Entangler<T: Storage + 'static> {
+    pub(crate) storage: T,
+    pub(crate) config: Config,
 }
 
 /// Represents a range of chunks to download.
 /// All ranges are inclusive.
 #[derive(Debug, Copy, Clone)]
 pub enum ChunkRange {
-    /// Download chunks starting from the given index till the end.
+    /// Range of chunks starting from the given index till the end.
     From(u64),
-    /// Download chunks starting from the beginning till the given index inclusive.
+    /// Range of chunks starting from the beginning till the given index inclusive.
     Till(u64),
-    /// Download chunks between the given indices inclusive.
+    /// Range of chunks between the given indices inclusive.
     Between(u64, u64),
+}
+
+impl ChunkRange {
+    /// Converts the range to a tuple of the beginning and end indices.
+    /// The end index is exclusive, i.e. the range is `[begin, end)`.
+    fn to_beg_end(self) -> (u64, Option<u64>) {
+        match self {
+            ChunkRange::From(first) => (first, None),
+            ChunkRange::Till(last) => (0, Some(last + 1)),
+            ChunkRange::Between(first, last) => (first, Some(last + 1)),
+        }
+    }
 }
 
 impl<T: Storage> Entangler<T> {
@@ -168,8 +188,9 @@ impl<T: Storage> Entangler<T> {
     ///
     /// The hash of the metadata.
     pub async fn entangle_uploaded(&self, hash: String) -> Result<String> {
-        let orig_data = self.storage.download_bytes(&hash).await?;
-        self.entangle(orig_data, hash).await
+        let orig_data_stream = self.storage.download_bytes(&hash).await?;
+        self.entangle(read_stream(orig_data_stream).await?, hash)
+            .await
     }
 
     /// Downloads the data identified by the given hash. If the data is corrupted, it attempts to
@@ -182,22 +203,33 @@ impl<T: Storage> Entangler<T> {
     ///
     /// # Returns
     ///
-    /// The downloaded data.
-    pub async fn download(&self, hash: &str, metadata_hash: Option<&str>) -> Result<Bytes, Error> {
+    /// A `Result` containing a stream of bytes.
+    pub async fn download(
+        &self,
+        hash: &str,
+        metadata_hash: Option<&str>,
+    ) -> Result<ByteStream, Error> {
         match (self.storage.download_bytes(hash).await, metadata_hash) {
-            (Ok(data), _) => Ok(data),
-            (Err(_), Some(metadata_hash)) => {
-                self.download_repaired(hash, self.download_metadata(metadata_hash).await?)
-                    .await
-            }
-            (Err(e), _) => Err(Error::BlobDownload {
+            (Ok(stream), None) => Ok(Box::pin(stream.map_err(Error::from))),
+            (Ok(stream), Some(metadata_hash)) => Ok(Box::pin(RepairingStream::new(
+                self.clone(),
+                hash.to_string(),
+                metadata_hash.to_string(),
+                stream,
+            ))),
+            (Err(e), None) => Err(Error::BlobDownload {
                 hash: hash.to_string(),
                 source: e.into(),
             }),
+            (Err(_), Some(metadata_hash)) => {
+                let metadata = self.download_metadata(metadata_hash).await?;
+                let repaired_stream = self.download_repaired(hash, metadata).await?;
+                Ok(Box::pin(repaired_stream))
+            }
         }
     }
 
-    /// Downloads a range of chunks of the data identified by the given hash. If the data is
+    /// Downloads a range of chunks of the data identified by the given hash as a stream. If the data is
     /// corrupted, it attempts to repair the data using the parity blobs identified by the metadata
     /// hash.
     ///
@@ -209,20 +241,16 @@ impl<T: Storage> Entangler<T> {
     ///
     /// # Returns
     ///
-    /// The downloaded data.
+    /// A `Result` containing a stream of the downloaded bytes.
     ///
     /// See [ChunkRange] for more information on the range of chunks.
     pub async fn download_range(
         &self,
         hash: &str,
         chunk_range: ChunkRange,
-        metadata_hash: Option<&str>,
-    ) -> Result<Bytes, Error> {
-        let (beg, end) = match chunk_range {
-            ChunkRange::From(first) => (first, None),
-            ChunkRange::Till(last) => (0, Some(last + 1)),
-            ChunkRange::Between(first, last) => (first, Some(last + 1)),
-        };
+        metadata_hash: Option<String>,
+    ) -> Result<ByteStream, Error> {
+        let (beg, end) = chunk_range.to_beg_end();
 
         let mut index = beg;
         let mut chunk_ids = Vec::new();
@@ -235,17 +263,14 @@ impl<T: Storage> Entangler<T> {
             }
         }
 
-        let chunks = self.download_chunks(hash, chunk_ids, metadata_hash).await?;
-        let mut buf = BytesMut::with_capacity(CHUNK_SIZE as usize * chunks.len());
-        for i in beg..index {
-            let id = mapper.index_to_id(i)?;
-            buf.extend_from_slice(&chunks[&id]);
-        }
+        let chunk_stream = self.download_chunks(hash.to_string(), chunk_ids, metadata_hash)?;
 
-        Ok(buf.into())
+        let byte_stream = chunk_stream.map(|(_, bytes)| bytes);
+
+        Ok(Box::pin(byte_stream))
     }
 
-    /// Downloads the chunks with specific ids of the data identified by the given hash. If the data
+    /// Downloads the chunks with specific ids of the data identified by the given hash as a stream. If the data
     /// is corrupted, it attempts to repair the data using the parity blobs identified by the
     /// metadata hash.
     ///
@@ -257,141 +282,114 @@ impl<T: Storage> Entangler<T> {
     ///
     /// # Returns
     ///
-    /// A map of chunk ids to the downloaded data.
-    ///
-    /// # Note
-    ///
-    /// The caller is responsible for ensuring that the chunks fit into the memory.
-    pub async fn download_chunks(
+    /// A `Result` containing a stream of chunk ids and the downloaded data.
+    /// The chunks are guaranteed to be in the same order as the input chunk ids.
+    pub fn download_chunks(
         &self,
-        hash: &str,
+        hash: String,
         chunk_ids: Vec<T::ChunkId>,
-        metadata_hash: Option<&str>,
-    ) -> Result<HashMap<T::ChunkId, Bytes>, Error> {
-        let mut chunks = HashMap::new();
-        let mut failed_chunks = Vec::new();
-        let mut err: Option<StorageError> = None;
-        for chunk_id in chunk_ids {
-            match self.storage.download_chunk(hash, chunk_id.clone()).await {
-                Ok(chunk) => {
-                    chunks.insert(chunk_id, chunk);
-                }
-                Err(e) => {
-                    if err.is_none() {
-                        err = Some(e);
-                    }
-                    failed_chunks.push(chunk_id);
-                }
-            }
+        metadata_hash: Option<String>,
+    ) -> Result<ChunkStream<T::ChunkId>, Error> {
+        if chunk_ids.is_empty() {
+            return Err(Error::EmptyInput);
         }
 
-        if err.is_none() {
-            return Ok(chunks);
-        }
-
-        if metadata_hash.is_none() {
-            return Err(Error::ChunksDownload {
-                hash: hash.to_string(),
-                chunks: failed_chunks.iter().map(|c| c.to_string()).collect(),
-                source: err.unwrap().into(),
-            });
-        }
-
-        let metadata = self.download_metadata(metadata_hash.unwrap()).await?;
-
-        if self.config.always_repair {
-            let ch_size = metadata.chunk_size as usize;
-            let res = self.download_repaired(hash, metadata).await?;
-            let mapper = self.storage.chunk_id_mapper(hash).await?;
-            for chunk_id in failed_chunks {
-                let index = mapper.id_to_index(&chunk_id)?;
-                chunks.insert(
-                    chunk_id,
-                    res.slice(index as usize * ch_size..(index as usize + 1) * ch_size),
-                );
-            }
+        if let Some(metadata_hash) = metadata_hash {
+            Ok(Box::pin(RepairingChunkStream::new(
+                self.clone(),
+                hash,
+                metadata_hash,
+                chunk_ids,
+            )))
         } else {
-            let repaired_data = self
-                .repair_chunks(
-                    metadata,
-                    failed_chunks,
-                    self.storage.chunk_id_mapper(hash).await?,
-                )
-                .await?;
-
-            for (chunk_id, chunk) in repaired_data {
-                chunks.insert(chunk_id, chunk);
-            }
+            Ok(Box::pin(futures::stream::unfold(
+                (chunk_ids, 0, hash, self.clone()),
+                |(chunk_ids, i, hash, ent)| async move {
+                    if i < chunk_ids.len() {
+                        let chunk_id = chunk_ids[i].clone();
+                        let result = ent
+                            .storage
+                            .download_chunk(&hash, chunk_id.clone())
+                            .await
+                            .map_err(Error::from);
+                        Some(((chunk_id, result), (chunk_ids, i + 1, hash, ent)))
+                    } else {
+                        None
+                    }
+                },
+            )))
         }
-
-        Ok(chunks)
     }
 
-    async fn download_metadata(&self, metadata_hash: &str) -> Result<Metadata, Error> {
-        let metadata_bytes = self.storage.download_bytes(metadata_hash).await?;
-        Ok(serde_json::from_slice(&metadata_bytes)?)
+    pub(crate) async fn download_metadata(&self, metadata_hash: &str) -> Result<Metadata, Error> {
+        let stream = self.storage.download_bytes(metadata_hash).await?;
+        Ok(serde_json::from_slice(&read_stream(stream).await?)?)
     }
 
     /// Downloads the data identified by the given hash and attempts to repair it using the parity
-    /// blobs identified by the metadata hash. Returns the repaired data.
+    /// blobs identified by the metadata hash. Returns a stream of the repaired data.
     /// It downloads the original blob chunk-by-chunk and tries to repair the missing chunks.
-    async fn download_repaired(&self, hash: &str, metadata: Metadata) -> Result<Bytes, Error> {
-        match self.storage.iter_chunks(hash).await {
-            Ok(stream) => {
-                let num_chunks =
-                    (metadata.num_bytes + metadata.chunk_size - 1) / metadata.chunk_size;
-                let height = metadata.s as u64;
-                let (available_chunks, missing_indexes, mapper) =
-                    self.analyze_chunks(hash, stream, num_chunks).await?;
-                let rep_chunks = self
-                    .repair_chunks(metadata, missing_indexes, mapper.clone())
-                    .await?;
-
-                let mut grid = Grid::new(
-                    available_chunks.into_iter().map(|(_, b)| b).collect(),
-                    height,
-                )
-                .map_err(|e| Error::Other(e.into()))?;
-
-                let positioner = Positioner::new(height, num_chunks);
-                for (chunk_id, chunk) in rep_chunks {
-                    let index = mapper.id_to_index(&chunk_id)?;
-                    grid.set_cell(positioner.index_to_pos(index), chunk);
-                }
-
-                self.storage.upload_bytes(grid.assemble_data()).await?;
-                Ok(grid.assemble_data())
-            }
-            Err(e) => Err(Error::Storage(e)),
-        }
-    }
-
-    /// Analyzes the chunks in the stream and returns the available chunks, missing indexes, and
-    /// a map of chunk ids to positions.
-    async fn analyze_chunks(
+    pub(crate) async fn download_repaired(
         &self,
         hash: &str,
-        mut stream: ByteStream<T::ChunkId>,
-        num_chunks: u64,
-    ) -> Result<(Vec<(T::ChunkId, Bytes)>, Vec<T::ChunkId>, T::ChunkIdMapper), Error> {
-        let mut missing_indexes = Vec::new();
-        let mut available_chunks = vec![(T::ChunkId::default(), Bytes::new()); num_chunks as usize];
-        let mapper = self.storage.chunk_id_mapper(hash).await?;
-        while let Some((chunk_id, chunk_result)) = stream.next().await {
-            let index = mapper.id_to_index(&chunk_id).map_err(Error::Storage)? as usize;
-            match chunk_result {
-                Ok(chunk) => available_chunks[index] = (chunk_id.clone(), chunk),
-                Err(_) => {
-                    available_chunks[index] = (chunk_id.clone(), Bytes::new());
-                    missing_indexes.push(chunk_id.clone());
-                }
-            }
-        }
+        metadata: Metadata,
+    ) -> Result<ByteStream, Error> {
+        match self.storage.iter_chunks(hash).await {
+            Ok(mut stream) => {
+                let mut available_chunks = Vec::new();
+                let mut missing_chunks = Vec::new();
+                let mapper = self.storage.chunk_id_mapper(hash).await?;
 
-        Ok((available_chunks, missing_indexes, mapper))
+                while let Some((chunk_id, res)) = stream.next().await {
+                    match res {
+                        Ok(chunk) => {
+                            available_chunks.push((chunk_id.clone(), chunk));
+                        }
+                        Err(_) => {
+                            missing_chunks.push(chunk_id.clone());
+                        }
+                    }
+                }
+
+                let repaired_chunks = self
+                    .repair_chunks(metadata.clone(), missing_chunks, mapper.clone())
+                    .await?;
+
+                let mut all_chunks = HashMap::new();
+                for (chunk_id, chunk) in available_chunks {
+                    all_chunks.insert(chunk_id, chunk);
+                }
+                all_chunks.extend(repaired_chunks);
+
+                let num_chunks =
+                    (metadata.num_bytes + metadata.chunk_size - 1) / metadata.chunk_size;
+                let mut data = BytesMut::with_capacity((num_chunks * CHUNK_SIZE) as usize);
+                for index in 0..num_chunks {
+                    let chunk_id = mapper.index_to_id(index)?;
+                    if let Some(chunk) = all_chunks.get(&chunk_id) {
+                        data.extend_from_slice(chunk);
+                    } else {
+                        return Err(Error::Other(anyhow::anyhow!("Missing chunk after repair")));
+                    }
+                }
+
+                let owned_data = data.freeze();
+
+                self.storage.upload_bytes(owned_data.clone()).await?;
+
+                let stream = futures::stream::iter((0..num_chunks).map(move |i| {
+                    let start = i as usize * CHUNK_SIZE as usize;
+                    let end = (start + CHUNK_SIZE as usize).min(owned_data.len());
+                    Ok(owned_data.slice(start..end))
+                }));
+
+                Ok(Box::pin(stream))
+            }
+            Err(e) => Err(Error::from(e)),
+        }
     }
 
-    async fn repair_chunks(
+    pub(crate) async fn repair_chunks(
         &self,
         metadata: Metadata,
         missing_indexes: Vec<T::ChunkId>,
@@ -406,6 +404,14 @@ impl<T: Storage> Entangler<T> {
             .await
             .map_err(Error::Repair)
     }
+}
+
+async fn read_stream(mut stream: storage::ByteStream) -> Result<Bytes, anyhow::Error> {
+    let mut bytes = BytesMut::with_capacity(stream.size_hint().0);
+    while let Some(chunk) = stream.next().await {
+        bytes.extend_from_slice(&chunk?);
+    }
+    Ok(bytes.freeze())
 }
 
 fn bytes_to_chunks(bytes: Bytes, chunk_size: u64) -> Vec<Bytes> {

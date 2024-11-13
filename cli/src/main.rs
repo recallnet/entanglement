@@ -8,10 +8,11 @@
 use std::net::SocketAddr;
 
 use clap::{Args, Parser, Subcommand};
+use futures::StreamExt;
 use std::str::FromStr;
 use stderrlog::Timestamp;
 
-use entangler::{Config, Entangler};
+use entangler::{ByteStream, Config, Entangler};
 use storage::iroh::IrohStorage;
 
 #[derive(Parser)]
@@ -84,6 +85,18 @@ enum ConfigError {
     ConflictingConfig,
 }
 
+async fn write_stream_to_file(mut stream: ByteStream, path: &str) -> anyhow::Result<()> {
+    use tokio::fs::File;
+    use tokio::io::AsyncWriteExt;
+
+    let mut file = File::create(path).await?;
+    while let Some(chunk) = stream.next().await {
+        file.write_all(&chunk?).await?;
+    }
+    file.flush().await?;
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -115,10 +128,10 @@ async fn main() -> anyhow::Result<()> {
             println!("uploaded file. Hash: {}, Meta: {}", file_hash, meta_hash);
         }
         Commands::Download(args) => {
-            let bytes = entangler
+            let stream = entangler
                 .download(&args.hash, args.metadata_hash.as_deref())
                 .await?;
-            tokio::fs::write(args.output, bytes).await?;
+            write_stream_to_file(stream, &args.output).await?;
             println!("downloaded file");
         }
     }

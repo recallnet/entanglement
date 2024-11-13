@@ -13,6 +13,7 @@ mod executer;
 mod grid;
 mod lattice;
 mod repairer;
+mod stream;
 
 #[cfg(test)]
 mod printer;
