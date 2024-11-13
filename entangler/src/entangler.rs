@@ -71,12 +71,24 @@ pub struct Entangler<T: Storage + 'static> {
 /// All ranges are inclusive.
 #[derive(Debug, Copy, Clone)]
 pub enum ChunkRange {
-    /// Download chunks starting from the given index till the end.
+    /// Range of chunks starting from the given index till the end.
     From(u64),
-    /// Download chunks starting from the beginning till the given index inclusive.
+    /// Range of chunks starting from the beginning till the given index inclusive.
     Till(u64),
-    /// Download chunks between the given indices inclusive.
+    /// Range of chunks between the given indices inclusive.
     Between(u64, u64),
+}
+
+impl ChunkRange {
+    /// Converts the range to a tuple of the beginning and end indices.
+    /// The end index is exclusive, i.e. the range is `[begin, end)`.
+    fn to_beg_end(&self) -> (u64, Option<u64>) {
+        match self {
+            ChunkRange::From(first) => (*first, None),
+            ChunkRange::Till(last) => (0, Some(last + 1)),
+            ChunkRange::Between(first, last) => (*first, Some(last + 1)),
+        }
+    }
 }
 
 impl<T: Storage> Entangler<T> {
@@ -238,11 +250,7 @@ impl<T: Storage> Entangler<T> {
         chunk_range: ChunkRange,
         metadata_hash: Option<String>,
     ) -> Result<ByteStream, Error> {
-        let (beg, end) = match chunk_range {
-            ChunkRange::From(first) => (first, None),
-            ChunkRange::Till(last) => (0, Some(last + 1)),
-            ChunkRange::Between(first, last) => (first, Some(last + 1)),
-        };
+        let (beg, end) = chunk_range.to_beg_end();
 
         let mut index = beg;
         let mut chunk_ids = Vec::new();
@@ -275,10 +283,7 @@ impl<T: Storage> Entangler<T> {
     /// # Returns
     ///
     /// A `Result` containing a stream of chunk ids and the downloaded data.
-    ///
-    /// # Note
-    ///
-    /// The caller is responsible for ensuring that the chunks fit into the memory.
+    /// The chunks are guaranteed to be in the same order as the input chunk ids.
     pub fn download_chunks(
         &self,
         hash: String,
