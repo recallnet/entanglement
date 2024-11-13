@@ -82,11 +82,11 @@ pub enum ChunkRange {
 impl ChunkRange {
     /// Converts the range to a tuple of the beginning and end indices.
     /// The end index is exclusive, i.e. the range is `[begin, end)`.
-    fn to_beg_end(&self) -> (u64, Option<u64>) {
+    fn to_beg_end(self) -> (u64, Option<u64>) {
         match self {
-            ChunkRange::From(first) => (*first, None),
+            ChunkRange::From(first) => (first, None),
             ChunkRange::Till(last) => (0, Some(last + 1)),
-            ChunkRange::Between(first, last) => (*first, Some(last + 1)),
+            ChunkRange::Between(first, last) => (first, Some(last + 1)),
         }
     }
 }
