@@ -135,7 +135,7 @@ mod tests {
     fn find_next_cell_along_strand(grid: &Grid, pos: Pos, strand_type: StrandType) -> &Bytes {
         let mut next_pos = pos + strand_type;
         while grid.try_get_cell(next_pos).is_none() {
-            next_pos = next_pos + strand_type;
+            next_pos += strand_type;
         }
         grid.get_cell(next_pos)
     }
@@ -169,15 +169,16 @@ mod tests {
 
         // first LW is complete (e.g. 25 chunks), second LW is not (except for 50 case)
         for num_chunks in 26..50 {
-            let grid = Grid::new(create_num_chunks(num_chunks), DIM).expect(&format!(
-                "failed to create grid for num chunks: {}",
-                num_chunks
-            ));
+            let grid = Grid::new(create_num_chunks(num_chunks), DIM)
+                .unwrap_or_else(|_| panic!("failed to create grid for num chunks: {}", num_chunks));
 
-            let parity_grid = create_parity_grid(&grid, StrandType::Left).expect(&format!(
-                "failed to create parity grid for num chunks: {}",
-                num_chunks
-            ));
+            let parity_grid = create_parity_grid(&grid, StrandType::Left).unwrap_or_else(|_| {
+                panic!(
+                    "failed to create parity grid for num chunks: {}",
+                    num_chunks
+                )
+            });
+
             let st = parity_grid.strand_type;
 
             // we don't need to start from 0 as we know they all have adjacent pair cell.
