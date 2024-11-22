@@ -55,8 +55,8 @@ fn create_parity_grid(grid: &Grid, strand_type: StrandType) -> Result<ParityGrid
                     // we need LW size. At the moment we assume it's square with side equal to grid's height
                     let lw_size = grid.get_height();
                     // calculate the number of steps to go along the strand
-                    let steps = lw_size - (pos.x as u64 % lw_size);
-                    let pair = grid.get_cell(pos.near(strand_type.into(), steps));
+                    let steps = lw_size - (next_pos.x as u64 % lw_size);
+                    let pair = grid.get_cell(next_pos.near(strand_type.into(), steps));
                     parity_grid.set_cell(pos, entangle_chunks(cell, pair));
                 }
             }
@@ -75,8 +75,8 @@ mod tests {
     use bytes::Bytes;
     use std::str;
 
-    const WIDTH: usize = 3;
-    const HEIGHT: usize = 3;
+    const WIDTH: u64 = 3;
+    const HEIGHT: u64 = 3;
 
     fn create_chunks() -> Vec<Bytes> {
         vec![
@@ -92,19 +92,28 @@ mod tests {
         ]
     }
 
+    fn create_num_chunks(num_chunks: usize) -> Vec<Bytes> {
+        let mut chunks = Vec::with_capacity(num_chunks);
+        for i in 0..num_chunks {
+            let ch = vec![i as u8; 1];
+            chunks.push(Bytes::from(ch));
+        }
+        chunks
+    }
+
     fn entangle(s1: &str, s2: &str) -> Bytes {
         entangle_chunks(&Bytes::from(s1.to_string()), &Bytes::from(s2.to_string()))
     }
 
-    fn entangle_by_pos(x: usize, y: usize, dy: i64) -> Bytes {
+    fn entangle_by_pos(x: u64, y: u64, dy: i64) -> Bytes {
         const CHARS: &str = "abcdefghi";
         let pos1 = x * HEIGHT + y;
         // calculate y of the second cell relative to y of the first cell
         // we add HEIGHT in case y is negative
-        let y2 = ((y + HEIGHT) as i64 + dy) % HEIGHT as i64;
-        let pos2 = ((x + 1) % WIDTH) * HEIGHT + y2 as usize;
-        let ch1 = &CHARS[pos1..pos1 + 1];
-        let ch2 = &CHARS[pos2..pos2 + 1];
+        let y2 = ((y + HEIGHT) as i64 + dy) as u64 % HEIGHT;
+        let pos2 = ((x + 1) % WIDTH) * HEIGHT + y2;
+        let ch1 = &CHARS[pos1 as usize..pos1 as usize + 1];
+        let ch2 = &CHARS[pos2 as usize..pos2 as usize + 1];
         entangle(ch1, ch2)
     }
 
@@ -121,6 +130,14 @@ mod tests {
         assert_eq!(g.get_cell(Pos::new(2, 0)), &entangle_by_pos(2, 0, dy));
         assert_eq!(g.get_cell(Pos::new(2, 1)), &entangle_by_pos(2, 1, dy));
         assert_eq!(g.get_cell(Pos::new(2, 2)), &entangle_by_pos(2, 2, dy));
+    }
+
+    fn find_next_cell_along_strand(grid: &Grid, pos: Pos, strand_type: StrandType) -> &Bytes {
+        let mut next_pos = pos + strand_type;
+        while grid.try_get_cell(next_pos).is_none() {
+            next_pos = next_pos + strand_type;
+        }
+        grid.get_cell(next_pos)
     }
 
     #[test]
@@ -144,6 +161,43 @@ mod tests {
 
         let parity_grid = create_parity_grid(&grid, StrandType::Right).unwrap();
         assert_parity_grid(&parity_grid);
+    }
+
+    #[test]
+    fn test_if_lw_is_not_complete_it_wraps_and_entangles_correctly() {
+        const DIM: u64 = 5;
+
+        // first LW is complete (e.g. 25 chunks), second LW is not (except for 50 case)
+        for num_chunks in 26..50 {
+            let grid = Grid::new(create_num_chunks(num_chunks), DIM).expect(&format!(
+                "failed to create grid for num chunks: {}",
+                num_chunks
+            ));
+
+            let parity_grid = create_parity_grid(&grid, StrandType::Left).expect(&format!(
+                "failed to create parity grid for num chunks: {}",
+                num_chunks
+            ));
+            let st = parity_grid.strand_type;
+
+            // we don't need to start from 0 as we know they all have adjacent pair cell.
+            for ind in 20..num_chunks as u64 {
+                let x = ind / DIM;
+                let y = ind % DIM;
+                let pos = Pos::new(x, y);
+                let cell = grid.get_cell(pos);
+                let pair_cell = find_next_cell_along_strand(&grid, pos, st);
+
+                let entangled_cell = entangle_chunks(cell, pair_cell);
+                assert_eq!(
+                    entangled_cell,
+                    parity_grid.grid.get_cell(pos),
+                    "num_chunks: {}, chunk index: {}",
+                    num_chunks,
+                    ind
+                );
+            }
+        }
     }
 
     #[test]
