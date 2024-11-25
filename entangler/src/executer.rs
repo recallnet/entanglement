@@ -167,7 +167,9 @@ mod tests {
     fn test_if_lw_is_not_complete_it_wraps_and_entangles_correctly() {
         const DIM: u64 = 5;
 
-        // first LW is complete (e.g. 25 chunks), second LW is not (except for 50 case)
+        // LW is 25-chunks-aligned (5 * 5). We want to have first LW complete and second LW incomplete.
+        // We test different variations of incomplete LWs.
+        // For the last case (50 chunks) we have the second LW complete as well.
         for num_chunks in 26..50 {
             let grid = Grid::new(create_num_chunks(num_chunks), DIM)
                 .unwrap_or_else(|_| panic!("failed to create grid for num chunks: {}", num_chunks));
@@ -181,10 +183,11 @@ mod tests {
 
             let st = parity_grid.strand_type;
 
-            // we don't need to start from 0 as we know they all have adjacent pair cell.
-            for ind in 20..num_chunks as u64 {
-                let x = ind / DIM;
-                let y = ind % DIM;
+            // we don't need to start from 0 as we know the first LW is complete and first 20 chunks
+            // (a.k.a. first 4 columns) have adjacent pair cell.
+            for chunk_index in 20..num_chunks as u64 {
+                let x = chunk_index / DIM;
+                let y = chunk_index % DIM;
                 let pos = Pos::new(x, y);
                 let cell = grid.get_cell(pos);
                 let pair_cell = find_next_cell_along_strand(&grid, pos, st);
@@ -195,7 +198,7 @@ mod tests {
                     parity_grid.grid.get_cell(pos),
                     "num_chunks: {}, chunk index: {}",
                     num_chunks,
-                    ind
+                    chunk_index
                 );
             }
         }
