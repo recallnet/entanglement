@@ -900,7 +900,7 @@ async fn if_download_fails_it_should_upload_to_storage_after_repair() -> Result<
 }
 
 #[tokio::test]
-async fn test_upload_small_file_without_metadata() -> Result<()> {
+async fn test_upload_and_download_small_file_without_metadata() -> Result<()> {
     struct TestCase {
         name: &'static str,
         data: Bytes,
@@ -956,7 +956,7 @@ async fn test_upload_small_file_without_metadata() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_upload_small_file_with_metadata() -> Result<()> {
+async fn test_upload_and_download_small_file_with_metadata() -> Result<()> {
     struct TestCase {
         name: &'static str,
         data: Bytes,
