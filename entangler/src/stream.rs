@@ -6,7 +6,6 @@ use bytes::{Bytes, BytesMut};
 use storage::{self, Error as StorageError, Storage};
 
 use futures::future::Future;
-use futures::ready;
 use futures::task::Poll;
 use futures::Stream;
 use futures::TryStreamExt;
@@ -85,17 +84,20 @@ impl<T: Storage + 'static> Stream for RepairingStream<T> {
         }
 
         // Then continue with normal stream processing
-        match ready!(this.inner.as_mut().poll_next(cx)) {
-            Some(Ok(chunk)) => {
+        match this.inner.as_mut().poll_next(cx) {
+            Poll::Ready(Some(Ok(chunk))) => {
                 this.buffer.extend_from_slice(&chunk);
-                if this.buffer.len() >= CHUNK_SIZE as usize {
-                    let chunk = this.buffer.split_to(CHUNK_SIZE as usize).freeze();
+
+                // Return data as soon as we have any in the buffer
+                if !this.buffer.is_empty() {
+                    let size = std::cmp::min(this.buffer.len(), CHUNK_SIZE as usize);
+                    let chunk = this.buffer.split_to(size).freeze();
                     Poll::Ready(Some(Ok(chunk)))
                 } else {
                     Poll::Pending
                 }
             }
-            Some(Err(_)) => {
+            Poll::Ready(Some(Err(_))) => {
                 // Start repair process
                 let fut = {
                     let entangler = this.entangler.clone();
@@ -110,7 +112,8 @@ impl<T: Storage + 'static> Stream for RepairingStream<T> {
                 this.repair_future = Some(Box::pin(fut));
                 Poll::Pending
             }
-            None => {
+            Poll::Ready(None) => {
+                // At EOF, return any remaining data
                 if !this.buffer.is_empty() {
                     let chunk = this.buffer.split().freeze();
                     Poll::Ready(Some(Ok(chunk)))
@@ -118,6 +121,7 @@ impl<T: Storage + 'static> Stream for RepairingStream<T> {
                     Poll::Ready(None)
                 }
             }
+            Poll::Pending => Poll::Pending,
         }
     }
 }
