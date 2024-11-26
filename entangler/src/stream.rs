@@ -69,18 +69,17 @@ impl<T: Storage + 'static> Stream for RepairingStream<T> {
 
         // First, try to make progress on repair if it's in progress
         if let Some(fut) = &mut this.repair_future {
-            match fut.as_mut().poll(cx) {
-                Poll::Ready(Ok(new_stream)) => {
+            match ready!(fut.as_mut().poll(cx)) {
+                Ok(new_stream) => {
                     this.inner = Box::pin(
                         new_stream.map_err(|e| StorageError::Other(storage::wrap_error(e.into()))),
                     );
                     this.repair_future = None;
                 }
-                Poll::Ready(Err(e)) => {
+                Err(e) => {
                     this.repair_future = None;
                     return Poll::Ready(Some(Err(e)));
                 }
-                Poll::Pending => return Poll::Pending,
             }
         }
 
@@ -88,8 +87,11 @@ impl<T: Storage + 'static> Stream for RepairingStream<T> {
         match ready!(this.inner.as_mut().poll_next(cx)) {
             Some(Ok(chunk)) => {
                 this.buffer.extend_from_slice(&chunk);
-                if this.buffer.len() >= CHUNK_SIZE as usize {
-                    let chunk = this.buffer.split_to(CHUNK_SIZE as usize).freeze();
+
+                // Return data as soon as we have any in the buffer
+                if !this.buffer.is_empty() {
+                    let size = std::cmp::min(this.buffer.len(), CHUNK_SIZE as usize);
+                    let chunk = this.buffer.split_to(size).freeze();
                     Poll::Ready(Some(Ok(chunk)))
                 } else {
                     Poll::Pending
@@ -111,6 +113,7 @@ impl<T: Storage + 'static> Stream for RepairingStream<T> {
                 Poll::Pending
             }
             None => {
+                // At EOF, return any remaining data
                 if !this.buffer.is_empty() {
                     let chunk = this.buffer.split().freeze();
                     Poll::Ready(Some(Ok(chunk)))

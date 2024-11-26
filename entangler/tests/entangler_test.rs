@@ -900,22 +900,65 @@ async fn if_download_fails_it_should_upload_to_storage_after_repair() -> Result<
 }
 
 #[tokio::test]
-async fn test_upload_small_file() -> Result<()> {
-    let storage = FakeStorage::new();
-    let ent = Entangler::new(storage.clone(), Config::new(3, 5, 5))?;
+async fn test_upload_and_download_small_file() -> Result<()> {
+    struct TestCase {
+        name: &'static str,
+        data: Bytes,
+    }
 
-    let bytes = Bytes::from_static(b"small chunk");
-    let hashes = ent.upload(bytes.clone()).await?;
+    let test_cases = vec![
+        TestCase {
+            name: "less than 1024 bytes",
+            data: Bytes::from_static(b"small chunk"),
+        },
+        TestCase {
+            name: "1024 bytes",
+            data: Bytes::from(vec![b'a'; 1024]),
+        },
+        TestCase {
+            name: "less than 2048 bytes",
+            data: Bytes::from(vec![b'b'; 1500]),
+        },
+        TestCase {
+            name: "2048 bytes",
+            data: Bytes::from(vec![b'c'; 2048]),
+        },
+        TestCase {
+            name: "more than 2048 bytes",
+            data: Bytes::from(vec![b'd'; 2500]),
+        },
+        TestCase {
+            name: "3072 bytes",
+            data: Bytes::from(vec![b'e'; 2048]),
+        },
+    ];
 
-    let stream = storage.download_bytes(&hashes.0).await?;
-    let result = read_stream(stream).await;
-    assert!(result.is_ok(), "Failed to download blob: {:?}", result);
+    for case in test_cases {
+        for use_metadata in [true, false] {
+            println!(
+                "Running test case: {}. Using metadata: {}",
+                case.name, use_metadata
+            );
 
-    let stream = ent.download(&hashes.0, None).await?;
-    let result = read_stream(stream).await;
-    assert!(result.is_ok(), "Failed to download blob: {:?}", result);
-    let downloaded_bytes = result.unwrap();
-    assert_eq!(downloaded_bytes, bytes);
+            let storage = FakeStorage::new();
+            let ent = Entangler::new(storage.clone(), Config::new(3, 5, 5))?;
+
+            let hashes = ent.upload(case.data.clone()).await?;
+
+            let stream = storage.download_bytes(&hashes.0).await?;
+            let result = read_stream(stream).await;
+            assert!(result.is_ok(), "Failed to download blob: {:?}", result);
+
+            let metadata = if use_metadata { Some(&hashes.1) } else { None };
+            let stream = ent
+                .download(&hashes.0, metadata.map(|s| s.as_str()))
+                .await?;
+            let result = read_stream(stream).await;
+            assert!(result.is_ok(), "Failed to download blob: {:?}", result);
+            let downloaded_bytes = result.unwrap();
+            assert_eq!(downloaded_bytes, case.data);
+        }
+    }
 
     Ok(())
 }
