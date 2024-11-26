@@ -6,7 +6,6 @@ use bytes::{Bytes, BytesMut};
 use storage::{self, Error as StorageError, Storage};
 
 use futures::future::Future;
-use futures::ready;
 use futures::task::Poll;
 use futures::Stream;
 use futures::TryStreamExt;
@@ -84,8 +83,8 @@ impl<T: Storage + 'static> Stream for RepairingStream<T> {
         }
 
         // Then continue with normal stream processing
-        match ready!(this.inner.as_mut().poll_next(cx)) {
-            Some(Ok(chunk)) => {
+        match this.inner.as_mut().poll_next(cx) {
+            Poll::Ready(Some(Ok(chunk))) => {
                 this.buffer.extend_from_slice(&chunk);
 
                 // Return data as soon as we have any in the buffer
@@ -97,7 +96,7 @@ impl<T: Storage + 'static> Stream for RepairingStream<T> {
                     Poll::Pending
                 }
             }
-            Some(Err(_)) => {
+            Poll::Ready(Some(Err(_))) => {
                 // Start repair process
                 let fut = {
                     let entangler = this.entangler.clone();
@@ -121,6 +120,7 @@ impl<T: Storage + 'static> Stream for RepairingStream<T> {
                     Poll::Ready(None)
                 }
             }
+            Poll::Pending => Poll::Pending,
         }
     }
 }
