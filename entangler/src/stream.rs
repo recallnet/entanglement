@@ -6,6 +6,7 @@ use bytes::{Bytes, BytesMut};
 use storage::{self, Error as StorageError, Storage};
 
 use futures::future::Future;
+use futures::ready;
 use futures::task::Poll;
 use futures::Stream;
 use futures::TryStreamExt;
@@ -68,24 +69,23 @@ impl<T: Storage + 'static> Stream for RepairingStream<T> {
 
         // First, try to make progress on repair if it's in progress
         if let Some(fut) = &mut this.repair_future {
-            match fut.as_mut().poll(cx) {
-                Poll::Ready(Ok(new_stream)) => {
+            match ready!(fut.as_mut().poll(cx)) {
+                Ok(new_stream) => {
                     this.inner = Box::pin(
                         new_stream.map_err(|e| StorageError::Other(storage::wrap_error(e.into()))),
                     );
                     this.repair_future = None;
                 }
-                Poll::Ready(Err(e)) => {
+                Err(e) => {
                     this.repair_future = None;
                     return Poll::Ready(Some(Err(e)));
                 }
-                Poll::Pending => return Poll::Pending,
             }
         }
 
         // Then continue with normal stream processing
-        match this.inner.as_mut().poll_next(cx) {
-            Poll::Ready(Some(Ok(chunk))) => {
+        match ready!(this.inner.as_mut().poll_next(cx)) {
+            Some(Ok(chunk)) => {
                 this.buffer.extend_from_slice(&chunk);
 
                 // Return data as soon as we have any in the buffer
@@ -97,7 +97,7 @@ impl<T: Storage + 'static> Stream for RepairingStream<T> {
                     Poll::Pending
                 }
             }
-            Poll::Ready(Some(Err(_))) => {
+            Some(Err(_)) => {
                 // Start repair process
                 let fut = {
                     let entangler = this.entangler.clone();
@@ -112,7 +112,7 @@ impl<T: Storage + 'static> Stream for RepairingStream<T> {
                 this.repair_future = Some(Box::pin(fut));
                 Poll::Pending
             }
-            Poll::Ready(None) => {
+            None => {
                 // At EOF, return any remaining data
                 if !this.buffer.is_empty() {
                     let chunk = this.buffer.split().freeze();
@@ -121,7 +121,6 @@ impl<T: Storage + 'static> Stream for RepairingStream<T> {
                     Poll::Ready(None)
                 }
             }
-            Poll::Pending => Poll::Pending,
         }
     }
 }
