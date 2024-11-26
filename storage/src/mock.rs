@@ -24,6 +24,7 @@ pub struct FakeStorage {
     data: Arc<Mutex<HashMap<String, Vec<Bytes>>>>,
     fail_chunks: Arc<Mutex<HashMap<String, Vec<u64>>>>,
     fail_blobs: Arc<Mutex<HashMap<String, bool>>>,
+    fail_streams: Arc<Mutex<HashMap<String, usize>>>, // Add this field
 }
 
 impl Default for FakeStorage {
@@ -38,6 +39,7 @@ impl FakeStorage {
             data: Arc::new(Mutex::new(HashMap::new())),
             fail_chunks: Arc::new(Mutex::new(HashMap::new())),
             fail_blobs: Arc::new(Mutex::new(HashMap::new())),
+            fail_streams: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -59,6 +61,15 @@ impl FakeStorage {
             .lock()
             .unwrap()
             .insert(hash.to_string(), true);
+    }
+
+    /// Simulate a failure in byte stream at specified position.
+    /// The stream will provide bytes until the specified position and then fail.
+    pub fn fake_failed_stream(&self, hash: &str, fail_at: usize) {
+        self.fail_streams
+            .lock()
+            .unwrap()
+            .insert(hash.to_string(), fail_at);
     }
 }
 
@@ -118,6 +129,7 @@ impl Storage for FakeStorage {
 
         self.fail_blobs.lock().unwrap().remove(&hash_str);
         self.fail_chunks.lock().unwrap().remove(&hash_str);
+        self.fail_streams.lock().unwrap().remove(&hash_str);
 
         Ok(hash_str)
     }
@@ -138,6 +150,7 @@ impl Storage for FakeStorage {
         if self.fail_blobs.lock().unwrap().get(hash).is_some() {
             return Err(StorageError::BlobNotFound(hash.to_string()));
         }
+
         let data = self
             .data
             .lock()
@@ -146,12 +159,43 @@ impl Storage for FakeStorage {
             .map(|chunks| chunks.concat())
             .ok_or_else(|| StorageError::BlobNotFound(hash.to_string()))?;
 
-        let chunks: Vec<_> = data
-            .chunks(CHUNK_SIZE)
-            .map(|chunk| Ok(Bytes::copy_from_slice(chunk)))
-            .collect();
+        let fail_at = self.fail_streams.lock().unwrap().get(hash).cloned();
 
-        Ok(Box::pin(futures::stream::iter(chunks)))
+        // Return a stream that will fail at the specified position
+        if let Some(fail_pos) = fail_at {
+            let mut chunks = Vec::new();
+            let mut remaining = fail_pos;
+
+            // Only output complete chunks that fit within fail_pos
+            while remaining >= CHUNK_SIZE {
+                let position = fail_pos - remaining;
+                chunks.push(Ok(Bytes::copy_from_slice(
+                    &data[position..position + CHUNK_SIZE],
+                )));
+                remaining -= CHUNK_SIZE;
+            }
+
+            // Add any remaining partial chunk before failure
+            if remaining > 0 {
+                let position = fail_pos - remaining;
+                chunks.push(Ok(Bytes::copy_from_slice(&data[position..fail_pos])));
+
+                // Add the failure
+                chunks.push(Err(StorageError::Other(format!(
+                    "Stream failed at position {}",
+                    fail_pos
+                ))));
+            }
+
+            Ok(Box::pin(futures::stream::iter(chunks)))
+        } else {
+            // Normal stream without failures
+            let chunks = data
+                .chunks(CHUNK_SIZE)
+                .map(|chunk| Ok(Bytes::copy_from_slice(chunk)))
+                .collect::<Vec<_>>();
+            Ok(Box::pin(futures::stream::iter(chunks)))
+        }
     }
 
     async fn iter_chunks(&self, hash: &str) -> Result<ChunkStream<Self::ChunkId>, StorageError> {
@@ -482,7 +526,8 @@ impl Storage for SpyStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::StreamExt;
+    use futures::{Stream, StreamExt};
+    use std::task::{Context, Poll};
 
     #[tokio::test]
     async fn test_upload_and_download_bytes() -> Result<()> {
@@ -789,6 +834,152 @@ mod tests {
         let res = storage.chunk_id_mapper("invalid").await;
         assert!(res.is_err(), "Expected error");
         assert!(matches!(res.err().unwrap(), StorageError::BlobNotFound(h) if h == "invalid"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_fake_failed_stream() -> Result<()> {
+        let storage = FakeStorage::new();
+        let data = vec![0u8; 3000]; // 3 chunks of 1024 bytes each
+        let hash = storage.upload_bytes(data.clone()).await?;
+
+        // Test failure at 1500 bytes (middle of second chunk)
+        storage.fake_failed_stream(&hash, 1500);
+
+        let mut stream = storage.download_bytes(&hash).await?;
+        let mut downloaded = Vec::new();
+        let mut error_occurred = false;
+
+        while let Some(chunk_result) = stream.next().await {
+            match chunk_result {
+                Ok(chunk) => downloaded.extend_from_slice(&chunk),
+                Err(_) => {
+                    error_occurred = true;
+                    break;
+                }
+            }
+        }
+
+        assert!(error_occurred, "Expected stream to fail");
+        assert_eq!(
+            downloaded.len(),
+            1500,
+            "Expected exactly 1500 bytes before failure"
+        );
+        assert_eq!(
+            &data[..1500],
+            &downloaded[..],
+            "Data mismatch before failure point"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn faked_failed_stream_after_upload_should_be_available() -> Result<()> {
+        let storage = FakeStorage::new();
+        let data = vec![0u8; 3000]; // 3 chunks
+        let hash = storage.upload_bytes(data.clone()).await?;
+
+        // First verify stream fails at 1500 bytes
+        storage.fake_failed_stream(&hash, 1500);
+        let mut stream = storage.download_bytes(&hash).await?;
+        let mut downloaded = Vec::new();
+        while let Some(chunk_result) = stream.next().await {
+            match chunk_result {
+                Ok(chunk) => downloaded.extend_from_slice(&chunk),
+                Err(_) => break,
+            }
+        }
+        assert_eq!(
+            downloaded.len(),
+            1500,
+            "Stream should have failed at 1500 bytes"
+        );
+
+        // Now upload the same data again and verify stream works completely
+        storage.upload_bytes(data.clone()).await?;
+        let mut stream = storage.download_bytes(&hash).await?;
+        let mut downloaded = Vec::with_capacity(3000);
+        while let Some(chunk_result) = stream.next().await {
+            downloaded.extend_from_slice(&chunk_result?);
+        }
+        assert_eq!(
+            downloaded.len(),
+            3000,
+            "Stream should complete after re-upload"
+        );
+        assert_eq!(data, downloaded, "Downloaded data should match original");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_upload_and_download_bytes_with_poll() -> Result<()> {
+        let storage = FakeStorage::new();
+        let data = vec![1u8; 3000];
+        let hash = storage.upload_bytes(data.clone()).await?;
+
+        let stream = storage.download_bytes(&hash).await?;
+        let mut pinned = Box::pin(stream);
+        let mut downloaded = Vec::new();
+        let mut error_received = false;
+
+        let waker = futures::task::noop_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        loop {
+            match pinned.as_mut().poll_next(&mut cx) {
+                Poll::Ready(Some(Ok(chunk))) => downloaded.extend_from_slice(&chunk),
+                Poll::Ready(Some(Err(_))) => {
+                    error_received = true;
+                    break;
+                }
+                Poll::Ready(None) => break,
+                Poll::Pending => panic!("Stream should not be pending in this test"),
+            }
+        }
+
+        assert!(!error_received, "No error should be received");
+        assert_eq!(data, downloaded);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_upload_and_download_bytes_with_poll_failed_stream() -> Result<()> {
+        let storage = FakeStorage::new();
+        let data = vec![1u8; 3000];
+        let hash = storage.upload_bytes(data.clone()).await?;
+
+        storage.fake_failed_stream(&hash, 1500);
+
+        let stream = storage.download_bytes(&hash).await?;
+        let mut pinned = Box::pin(stream);
+        let mut downloaded = Vec::new();
+        let mut error_received = false;
+
+        let waker = futures::task::noop_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        loop {
+            match pinned.as_mut().poll_next(&mut cx) {
+                Poll::Ready(Some(Ok(chunk))) => downloaded.extend_from_slice(&chunk),
+                Poll::Ready(Some(Err(_))) => {
+                    error_received = true;
+                    break;
+                }
+                Poll::Ready(None) => break,
+                Poll::Pending => panic!("Stream should not be pending in this test"),
+            }
+        }
+
+        assert!(error_received, "Error should be received");
+        assert_eq!(downloaded.len(), 1500, "Should receive exactly 1500 bytes");
+        assert_eq!(
+            &data[..1500],
+            &downloaded[..],
+            "Data mismatch before failure"
+        );
         Ok(())
     }
 }
