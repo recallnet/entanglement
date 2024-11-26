@@ -8,6 +8,7 @@ use futures::{Stream, StreamExt};
 use std::collections::HashSet;
 use std::str::FromStr;
 use storage::{self, mock::FakeStorage, ChunkIdMapper, Storage};
+use tokio::time::Duration;
 
 const HEIGHT: u64 = 5;
 // we choose WIDTH to be multiple of HEIGHT to avoid complex strand wrapping calculations
@@ -255,39 +256,87 @@ async fn if_stream_fails_and_metadata_is_not_provided_should_error() -> Result<(
 }
 
 #[tokio::test]
-#[ignore]
 async fn if_stream_fails_and_metadata_is_provided_should_repair() -> Result<()> {
-    let mock_storage = FakeStorage::new();
-    let ent = Entangler::new(
-        mock_storage.clone(),
-        Config::new(3, HEIGHT as u8, HEIGHT as u8),
-    )?;
-
-    let bytes = create_bytes(2); // Creates 2048 bytes (2 chunks)
-    let hashes = ent.upload(bytes.clone()).await?;
-
-    mock_storage.fake_failed_stream(&hashes.0, (CHUNK_SIZE + 10) as usize); // Fails after 1034 bytes
-
-    let mut stream = ent.download(&hashes.0, Some(&hashes.1)).await?;
-    let mut downloaded = Vec::new();
-    let mut stream_failed = false;
-
-    while let Some(chunk) = stream.next().await {
-        match chunk {
-            Ok(data) => {
-                println!("Received good chunk of size {}", data.len());
-                downloaded.extend_from_slice(&data);
-            }
-            Err(e) => {
-                println!("Stream error received: {:?}", e);
-                stream_failed = true;
-                break;
-            }
-        }
+    struct TestCase {
+        name: &'static str,
+        num_chunks: u64,
+        fail_at: usize,
     }
 
-    assert!(!stream_failed, "Stream should not fail");
-    assert_eq!(downloaded, bytes[..], "downloaded data mismatch");
+    let test_cases = vec![
+        TestCase {
+            name: "fail in middle of second chunk",
+            num_chunks: 2,
+            fail_at: CHUNK_SIZE as usize + 10,
+        },
+        /*TestCase {
+            name: "fail at chunk boundary",
+            num_chunks: 3,
+            fail_at: CHUNK_SIZE as usize,
+        },
+        TestCase {
+            name: "fail near end of file",
+            num_chunks: 2,
+            fail_at: (2 * CHUNK_SIZE - 10) as usize,
+        },
+        TestCase {
+            name: "fail at start of second chunk",
+            num_chunks: 3,
+            fail_at: CHUNK_SIZE as usize + 1,
+        },
+        TestCase {
+            name: "fail at start position 0",
+            num_chunks: 3,
+            fail_at: 0,
+        },*/
+    ];
+
+    for case in test_cases {
+        println!("Running test case: {}", case.name);
+        let mock_storage = FakeStorage::new();
+        let ent = Entangler::new(
+            mock_storage.clone(),
+            Config::new(3, HEIGHT as u8, HEIGHT as u8),
+        )?;
+
+        let bytes = create_bytes(case.num_chunks);
+        let hashes = ent.upload(bytes.clone()).await?;
+
+        // this simulates a failure during stream download
+        mock_storage.fake_failed_stream(&hashes.0, case.fail_at);
+
+        let mut stream = ent.download(&hashes.0, Some(&hashes.1)).await?;
+        let mut downloaded = Vec::new();
+        let mut stream_failed = false;
+
+        //while let Some(chunk) = stream.next().await
+        while let Some(chunk) = tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .map_err(|_| {
+                println!("test: Stream timed out");
+                anyhow::anyhow!("Stream timed out after 2 seconds")
+            })?
+        {
+            match chunk {
+                Ok(data) => {
+                    println!("test: Received good chunk of size {}", data.len());
+                    downloaded.extend_from_slice(&data);
+                }
+                Err(e) => {
+                    println!("test: Stream error received: {:?}", e);
+                    stream_failed = true;
+                    break;
+                }
+            }
+        }
+        println!(
+            "test: Stream completed, received {} bytes total",
+            downloaded.len()
+        );
+
+        assert!(!stream_failed, "Stream should not fail");
+        assert_eq!(downloaded, bytes, "downloaded data mismatch"); // Note: using bytes instead of bytes[..]
+    }
 
     Ok(())
 }
