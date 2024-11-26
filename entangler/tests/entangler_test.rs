@@ -212,6 +212,86 @@ async fn if_chunk_is_missing_and_metadata_is_provided_should_repair() -> Result<
     Ok(())
 }
 
+#[tokio::test]
+async fn if_stream_fails_and_metadata_is_not_provided_should_error() -> Result<()> {
+    let mock_storage = FakeStorage::new();
+    let ent = Entangler::new(
+        mock_storage.clone(),
+        Config::new(3, HEIGHT as u8, HEIGHT as u8),
+    )?;
+
+    let bytes = create_bytes(2); // Creates 2048 bytes (2 chunks)
+    let hashes = ent.upload(bytes.clone()).await?;
+
+    mock_storage.fake_failed_stream(&hashes.0, (CHUNK_SIZE + 10) as usize); // Fails after 1034 bytes
+
+    let mut stream = ent.download(&hashes.0, None).await?;
+    let mut downloaded = Vec::new();
+    let mut stream_failed = false;
+
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            Ok(data) => downloaded.extend_from_slice(&data),
+            Err(_) => {
+                stream_failed = true;
+                break;
+            }
+        }
+    }
+
+    assert!(stream_failed, "Stream should fail at 1034 bytes");
+    assert_eq!(
+        downloaded.len(),
+        1034,
+        "Should receive 1034 bytes before failure"
+    );
+    assert_eq!(
+        &bytes[..1034],
+        &downloaded[..],
+        "Data before failure should match"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore]
+async fn if_stream_fails_and_metadata_is_provided_should_repair() -> Result<()> {
+    let mock_storage = FakeStorage::new();
+    let ent = Entangler::new(
+        mock_storage.clone(),
+        Config::new(3, HEIGHT as u8, HEIGHT as u8),
+    )?;
+
+    let bytes = create_bytes(2); // Creates 2048 bytes (2 chunks)
+    let hashes = ent.upload(bytes.clone()).await?;
+
+    mock_storage.fake_failed_stream(&hashes.0, (CHUNK_SIZE + 10) as usize); // Fails after 1034 bytes
+
+    let mut stream = ent.download(&hashes.0, Some(&hashes.1)).await?;
+    let mut downloaded = Vec::new();
+    let mut stream_failed = false;
+
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            Ok(data) => {
+                println!("Received good chunk of size {}", data.len());
+                downloaded.extend_from_slice(&data);
+            }
+            Err(e) => {
+                println!("Stream error received: {:?}", e);
+                stream_failed = true;
+                break;
+            }
+        }
+    }
+
+    assert!(!stream_failed, "Stream should not fail");
+    assert_eq!(downloaded, bytes[..], "downloaded data mismatch");
+
+    Ok(())
+}
+
 fn make_parity_unavailable(st: &FakeStorage, metadata: &Metadata, strand: StrandType) {
     let hash = &metadata.parity_hashes[&strand];
     st.fake_failed_download(hash);

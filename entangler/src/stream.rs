@@ -5,11 +5,7 @@ use crate::entangler::{ByteStream, Entangler, Error, CHUNK_SIZE};
 use bytes::{Bytes, BytesMut};
 use storage::{self, Error as StorageError, Storage};
 
-use futures::future::Future;
-use futures::ready;
-use futures::task::Poll;
-use futures::Stream;
-use futures::TryStreamExt;
+use futures::{future::Future, ready, task::Poll, Stream, StreamExt, TryStreamExt};
 use std::pin::Pin;
 use std::task::Context;
 
@@ -29,6 +25,7 @@ pub struct RepairingStream<T: Storage + 'static> {
     entangler: Entangler<T>,
     hash: String,
     metadata_hash: String,
+    bytes_delivered: usize, // Track how many bytes we've delivered to the consumer
 }
 
 impl<T: Storage + 'static> RepairingStream<T> {
@@ -57,6 +54,45 @@ impl<T: Storage + 'static> RepairingStream<T> {
             inner,
             buffer: BytesMut::new(),
             repair_future: None,
+            bytes_delivered: 0,
+        }
+    }
+
+    // Helper method to fast-forward a new stream to current position
+    async fn fast_forward_stream(
+        mut stream: ByteStream,
+        skip_bytes: usize,
+    ) -> Result<ByteStream, Error> {
+        let mut skipped = 0;
+        let mut buffer = BytesMut::new();
+
+        while skipped < skip_bytes {
+            match stream.try_next().await? {
+                Some(chunk) => {
+                    let remaining = skip_bytes - skipped;
+                    if chunk.len() <= remaining {
+                        skipped += chunk.len();
+                    } else {
+                        // We found the chunk that contains our position
+                        // Keep the remainder in the buffer
+                        buffer.extend_from_slice(&chunk[remaining..]);
+                        break;
+                    }
+                }
+                None => {
+                    return Err(Error::Other(anyhow::anyhow!(
+                        "Stream ended during fast-forward"
+                    )))
+                }
+            }
+        }
+
+        if buffer.is_empty() {
+            Ok(stream)
+        } else {
+            // Convert buffer into a stream and chain it with the remaining stream
+            let buffer_stream = futures::stream::once(async move { Ok(buffer.freeze()) });
+            Ok(Box::pin(buffer_stream.chain(stream)))
         }
     }
 }
@@ -71,9 +107,24 @@ impl<T: Storage + 'static> Stream for RepairingStream<T> {
         if let Some(fut) = &mut this.repair_future {
             match ready!(fut.as_mut().poll(cx)) {
                 Ok(new_stream) => {
-                    this.inner = Box::pin(
-                        new_stream.map_err(|e| StorageError::Other(storage::wrap_error(e.into()))),
-                    );
+                    // Fast-forward the new stream to where we left off
+                    if this.bytes_delivered > 0 {
+                        let mut ff_future =
+                            Box::pin(Self::fast_forward_stream(new_stream, this.bytes_delivered));
+                        match ready!(ff_future.as_mut().poll(cx)) {
+                            Ok(fast_forwarded_stream) => {
+                                this.inner = Box::pin(fast_forwarded_stream.map_err(|e| {
+                                    StorageError::Other(storage::wrap_error(e.into()))
+                                }));
+                            }
+                            Err(e) => return Poll::Ready(Some(Err(e))),
+                        }
+                    } else {
+                        this.inner = Box::pin(
+                            new_stream
+                                .map_err(|e| StorageError::Other(storage::wrap_error(e.into()))),
+                        );
+                    }
                     this.repair_future = None;
                 }
                 Err(e) => {
@@ -92,6 +143,7 @@ impl<T: Storage + 'static> Stream for RepairingStream<T> {
                 if !this.buffer.is_empty() {
                     let size = std::cmp::min(this.buffer.len(), CHUNK_SIZE as usize);
                     let chunk = this.buffer.split_to(size).freeze();
+                    this.bytes_delivered += chunk.len();
                     Poll::Ready(Some(Ok(chunk)))
                 } else {
                     Poll::Pending
@@ -116,6 +168,7 @@ impl<T: Storage + 'static> Stream for RepairingStream<T> {
                 // At EOF, return any remaining data
                 if !this.buffer.is_empty() {
                     let chunk = this.buffer.split().freeze();
+                    this.bytes_delivered += chunk.len();
                     Poll::Ready(Some(Ok(chunk)))
                 } else {
                     Poll::Ready(None)
