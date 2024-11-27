@@ -279,7 +279,7 @@ async fn if_stream_fails_should_repair_and_continue_where_left_off() -> Result<(
             fail_at: (2 * CHUNK_SIZE - 1) as usize,
         },
         TestCase {
-            name: "fail at start of second chunk",
+            name: "fail near start of second chunk",
             num_chunks: 3,
             fail_at: CHUNK_SIZE as usize + 1,
         },
@@ -287,6 +287,11 @@ async fn if_stream_fails_should_repair_and_continue_where_left_off() -> Result<(
             name: "fail at position 0",
             num_chunks: 3,
             fail_at: 0,
+        },
+        TestCase {
+            name: "fail at the end",
+            num_chunks: 3,
+            fail_at: (3 * CHUNK_SIZE) as usize,
         },
     ];
 
@@ -306,7 +311,7 @@ async fn if_stream_fails_should_repair_and_continue_where_left_off() -> Result<(
 
         // provide metadata to repair the download
         let mut stream = ent.download(&hashes.0, Some(&hashes.1)).await?;
-        let mut downloaded = Vec::new();
+        let mut downloaded = Vec::with_capacity(case.fail_at);
         let mut stream_failed = false;
 
         while let Some(chunk) = stream.next().await {

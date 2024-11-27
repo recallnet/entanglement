@@ -147,8 +147,8 @@ impl<T: Storage + 'static> Stream for RepairingStream<T> {
 
         // Try to make progress on repair if it exists
         if this.repair_future.is_some() {
-            // polling on repair future can return Ready if an error occurred.
-            // In other cases it will replace `inner` future, so we can proceed with normal stream
+            // polling on repair future returns Ready only if an error occurred.
+            // In other cases it will replace inner future, so we can proceed with normal stream
             if let Poll::Ready(Some(result)) = this.poll_repair_future(cx) {
                 return Poll::Ready(Some(result));
             }
@@ -183,7 +183,7 @@ impl<T: Storage + 'static> Stream for RepairingStream<T> {
                         }
                     };
                     this.repair_future = Some(Box::pin(fut));
-                    // polling on repair future can return Ready if an error occurred.
+                    // polling on repair future returns Ready only if an error occurred.
                     // In other cases it will replace `inner` future, so we the loop repeat again
                     if let Poll::Ready(Some(result)) = this.poll_repair_future(cx) {
                         return Poll::Ready(Some(result));
