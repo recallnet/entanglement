@@ -223,7 +223,8 @@ async fn if_stream_fails_and_metadata_is_not_provided_should_error() -> Result<(
     let bytes = create_bytes(2); // Creates 2048 bytes (2 chunks)
     let hashes = ent.upload(bytes.clone()).await?;
 
-    mock_storage.fake_failed_stream(&hashes.0, (CHUNK_SIZE + 10) as usize); // Fails after 1034 bytes
+    // this simulates a failure during stream download after 1034 bytes
+    mock_storage.fake_failed_stream(&hashes.0, (CHUNK_SIZE + 10) as usize);
 
     let mut stream = ent.download(&hashes.0, None).await?;
     let mut downloaded = Vec::new();
@@ -331,7 +332,7 @@ async fn if_stream_fails_should_repair_and_continue_where_left_off() -> Result<(
         );
 
         assert!(!stream_failed, "Stream should not fail");
-        assert_eq!(downloaded, bytes, "downloaded data mismatch"); // Note: using bytes instead of bytes[..]
+        assert_eq!(downloaded, bytes, "downloaded data mismatch");
     }
 
     Ok(())
