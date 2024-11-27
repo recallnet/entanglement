@@ -840,8 +840,8 @@ mod tests {
     #[tokio::test]
     async fn test_fake_failed_stream() -> Result<()> {
         struct TestCase {
-            total_size: usize, // Total size of test data in bytes
-            fail_at: usize,    // Position where stream should fail
+            total_size: usize,
+            fail_at: usize,
         }
 
         let test_cases = [
@@ -865,7 +865,7 @@ mod tests {
 
         for (i, test_case) in test_cases.iter().enumerate() {
             let storage = FakeStorage::new();
-            let data = vec![i as u8; test_case.total_size]; // Fill with different values for each case
+            let data = vec![i as u8; test_case.total_size];
             let hash = storage.upload_bytes(data.clone()).await?;
 
             storage.fake_failed_stream(&hash, test_case.fail_at);
