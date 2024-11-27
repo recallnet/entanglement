@@ -1,15 +1,11 @@
 // Copyright 2024 Entanglement Contributors
 // SPDX-License-Identifier: Apache-2.0, MIT
 
-use crate::entangler::{ByteStream, Entangler, Error, CHUNK_SIZE};
-use bytes::{Bytes, BytesMut};
+use crate::entangler::{ByteStream, Entangler, Error};
+use bytes::Bytes;
 use storage::{self, Error as StorageError, Storage};
 
-use futures::future::Future;
-use futures::ready;
-use futures::task::Poll;
-use futures::Stream;
-use futures::TryStreamExt;
+use futures::{future::Future, ready, task::Poll, Stream, StreamExt, TryStreamExt};
 use std::pin::Pin;
 use std::task::Context;
 
@@ -24,11 +20,10 @@ type ByteStreamFuture = Pin<Box<dyn Future<Output = Result<ByteStream, Error>> +
 /// This stream ensures data integrity by automatically repairing corrupted chunks during streaming.
 pub struct RepairingStream<T: Storage + 'static> {
     inner: storage::ByteStream,
-    buffer: BytesMut,
-    repair_future: Option<ByteStreamFuture>,
     entangler: Entangler<T>,
     hash: String,
     metadata_hash: String,
+    bytes_delivered: usize, // Track how many bytes we've delivered to the consumer
 }
 
 impl<T: Storage + 'static> RepairingStream<T> {
@@ -55,8 +50,88 @@ impl<T: Storage + 'static> RepairingStream<T> {
             hash,
             metadata_hash,
             inner,
-            buffer: BytesMut::new(),
-            repair_future: None,
+            bytes_delivered: 0,
+        }
+    }
+
+    // Fast-forward a new stream to the given position
+    async fn fast_forward_stream(
+        mut stream: ByteStream,
+        skip_bytes: usize,
+    ) -> Result<ByteStream, Error> {
+        let mut skipped = 0;
+        let mut partial_chunk = None;
+
+        // Keep reading chunks until we reach or exceed the skip position
+        while skipped < skip_bytes {
+            match stream.try_next().await? {
+                Some(chunk) => {
+                    let current_chunk_start = skipped;
+                    let current_chunk_end = skipped + chunk.len();
+
+                    if current_chunk_end > skip_bytes {
+                        // This chunk contains our target position
+                        let offset = skip_bytes - current_chunk_start;
+                        partial_chunk = Some(chunk.slice(offset..));
+                        break;
+                    }
+
+                    skipped += chunk.len();
+                }
+                None => {
+                    return Err(Error::Other(anyhow::anyhow!(
+                        "Stream ended during fast-forward"
+                    )));
+                }
+            }
+        }
+
+        // Create a stream that starts at the exact position
+        if let Some(partial) = partial_chunk {
+            let first_chunk = futures::stream::once(async move { Ok(partial) });
+            Ok(Box::pin(first_chunk.chain(stream)))
+        } else {
+            Ok(stream)
+        }
+    }
+
+    /// Processes the repair future, updating the inner stream if repair was successful.
+    /// This will return `Ok(())` if the repair was successful and the inner stream was updated.
+    /// Otherwise, it will return an error.
+    /// After successful call the inner must be polled again to get the next chunk.
+    fn process_repair_future(
+        &mut self,
+        cx: &mut Context<'_>,
+        mut fut: ByteStreamFuture,
+    ) -> Result<(), Error> {
+        match fut.as_mut().poll(cx) {
+            Poll::Ready(result) => match result {
+                Ok(new_stream) => {
+                    // if we have delivered some bytes before the failure, we need to fast-forward the stream
+                    // to the correct position
+                    if self.bytes_delivered > 0 {
+                        let mut ff_future =
+                            Box::pin(Self::fast_forward_stream(new_stream, self.bytes_delivered));
+                        match ff_future.as_mut().poll(cx) {
+                            Poll::Ready(Ok(fast_forwarded_stream)) => {
+                                self.inner = Box::pin(fast_forwarded_stream.map_err(|e| {
+                                    StorageError::Other(storage::wrap_error(e.into()))
+                                }));
+                            }
+                            Poll::Ready(Err(e)) => return Err(e),
+                            Poll::Pending => return Ok(()),
+                        }
+                    } else {
+                        self.inner = Box::pin(
+                            new_stream
+                                .map_err(|e| StorageError::Other(storage::wrap_error(e.into()))),
+                        );
+                    }
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            },
+            Poll::Pending => Ok(()),
         }
     }
 }
@@ -67,58 +142,32 @@ impl<T: Storage + 'static> Stream for RepairingStream<T> {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = unsafe { self.get_unchecked_mut() };
 
-        // First, try to make progress on repair if it's in progress
-        if let Some(fut) = &mut this.repair_future {
-            match ready!(fut.as_mut().poll(cx)) {
-                Ok(new_stream) => {
-                    this.inner = Box::pin(
-                        new_stream.map_err(|e| StorageError::Other(storage::wrap_error(e.into()))),
-                    );
-                    this.repair_future = None;
+        // The loop is needed only to retry polling on inner future after it was replaced
+        // with repaired stream
+        loop {
+            match ready!(this.inner.as_mut().poll_next(cx)) {
+                Some(Ok(chunk)) => {
+                    this.bytes_delivered += chunk.len();
+                    return Poll::Ready(Some(Ok(chunk)));
                 }
-                Err(e) => {
-                    this.repair_future = None;
-                    return Poll::Ready(Some(Err(e)));
-                }
-            }
-        }
+                Some(Err(_)) => {
+                    let fut = {
+                        let entangler = this.entangler.clone();
+                        let hash = this.hash.clone();
+                        let metadata_hash = this.metadata_hash.clone();
 
-        // Then continue with normal stream processing
-        match ready!(this.inner.as_mut().poll_next(cx)) {
-            Some(Ok(chunk)) => {
-                this.buffer.extend_from_slice(&chunk);
-
-                // Return data as soon as we have any in the buffer
-                if !this.buffer.is_empty() {
-                    let size = std::cmp::min(this.buffer.len(), CHUNK_SIZE as usize);
-                    let chunk = this.buffer.split_to(size).freeze();
-                    Poll::Ready(Some(Ok(chunk)))
-                } else {
-                    Poll::Pending
-                }
-            }
-            Some(Err(_)) => {
-                // Start repair process
-                let fut = {
-                    let entangler = this.entangler.clone();
-                    let hash = this.hash.clone();
-                    let metadata_hash = this.metadata_hash.clone();
-
-                    async move {
-                        let metadata = entangler.download_metadata(&metadata_hash).await?;
-                        entangler.download_repaired(&hash, metadata).await
+                        async move {
+                            let metadata = entangler.download_metadata(&metadata_hash).await?;
+                            entangler.download_repaired(&hash, metadata).await
+                        }
+                    };
+                    // If succeeds it will replace `inner` future, so we repeat the loop again
+                    if let Err(e) = this.process_repair_future(cx, Box::pin(fut)) {
+                        return Poll::Ready(Some(Err(e)));
                     }
-                };
-                this.repair_future = Some(Box::pin(fut));
-                Poll::Pending
-            }
-            None => {
-                // At EOF, return any remaining data
-                if !this.buffer.is_empty() {
-                    let chunk = this.buffer.split().freeze();
-                    Poll::Ready(Some(Ok(chunk)))
-                } else {
-                    Poll::Ready(None)
+                }
+                None => {
+                    return Poll::Ready(None);
                 }
             }
         }
