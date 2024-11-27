@@ -8,7 +8,6 @@ use futures::{Stream, StreamExt};
 use std::collections::HashSet;
 use std::str::FromStr;
 use storage::{self, mock::FakeStorage, ChunkIdMapper, Storage};
-use tokio::time::Duration;
 
 const HEIGHT: u64 = 5;
 // we choose WIDTH to be multiple of HEIGHT to avoid complex strand wrapping calculations
@@ -256,7 +255,7 @@ async fn if_stream_fails_and_metadata_is_not_provided_should_error() -> Result<(
 }
 
 #[tokio::test]
-async fn if_stream_fails_and_metadata_is_provided_should_repair() -> Result<()> {
+async fn if_stream_fails_should_repair_and_continue_where_left_off() -> Result<()> {
     struct TestCase {
         name: &'static str,
         num_chunks: u64,
@@ -269,7 +268,7 @@ async fn if_stream_fails_and_metadata_is_provided_should_repair() -> Result<()> 
             num_chunks: 2,
             fail_at: CHUNK_SIZE as usize + 10,
         },
-        /*TestCase {
+        TestCase {
             name: "fail at chunk boundary",
             num_chunks: 3,
             fail_at: CHUNK_SIZE as usize,
@@ -277,7 +276,7 @@ async fn if_stream_fails_and_metadata_is_provided_should_repair() -> Result<()> 
         TestCase {
             name: "fail near end of file",
             num_chunks: 2,
-            fail_at: (2 * CHUNK_SIZE - 10) as usize,
+            fail_at: (2 * CHUNK_SIZE - 1) as usize,
         },
         TestCase {
             name: "fail at start of second chunk",
@@ -285,10 +284,10 @@ async fn if_stream_fails_and_metadata_is_provided_should_repair() -> Result<()> 
             fail_at: CHUNK_SIZE as usize + 1,
         },
         TestCase {
-            name: "fail at start position 0",
+            name: "fail at position 0",
             num_chunks: 3,
             fail_at: 0,
-        },*/
+        },
     ];
 
     for case in test_cases {
@@ -305,25 +304,17 @@ async fn if_stream_fails_and_metadata_is_provided_should_repair() -> Result<()> 
         // this simulates a failure during stream download
         mock_storage.fake_failed_stream(&hashes.0, case.fail_at);
 
+        // provide metadata to repair the download
         let mut stream = ent.download(&hashes.0, Some(&hashes.1)).await?;
         let mut downloaded = Vec::new();
         let mut stream_failed = false;
 
-        //while let Some(chunk) = stream.next().await
-        while let Some(chunk) = tokio::time::timeout(Duration::from_secs(5), stream.next())
-            .await
-            .map_err(|_| {
-                println!("test: Stream timed out");
-                anyhow::anyhow!("Stream timed out after 2 seconds")
-            })?
-        {
+        while let Some(chunk) = stream.next().await {
             match chunk {
                 Ok(data) => {
-                    println!("test: Received good chunk of size {}", data.len());
                     downloaded.extend_from_slice(&data);
                 }
-                Err(e) => {
-                    println!("test: Stream error received: {:?}", e);
+                Err(_) => {
                     stream_failed = true;
                     break;
                 }

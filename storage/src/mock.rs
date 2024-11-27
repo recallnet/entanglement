@@ -179,13 +179,13 @@ impl Storage for FakeStorage {
             if remaining > 0 {
                 let position = fail_pos - remaining;
                 chunks.push(Ok(Bytes::copy_from_slice(&data[position..fail_pos])));
-
-                // Add the failure
-                chunks.push(Err(StorageError::Other(format!(
-                    "Stream failed at position {}",
-                    fail_pos
-                ))));
             }
+
+            // Add the failure
+            chunks.push(Err(StorageError::Other(format!(
+                "Stream failed at position {}",
+                fail_pos
+            ))));
 
             Ok(Box::pin(futures::stream::iter(chunks)))
         } else {
@@ -839,38 +839,70 @@ mod tests {
 
     #[tokio::test]
     async fn test_fake_failed_stream() -> Result<()> {
-        let storage = FakeStorage::new();
-        let data = vec![0u8; 3000]; // 3 chunks of 1024 bytes each
-        let hash = storage.upload_bytes(data.clone()).await?;
-
-        // Test failure at 1500 bytes (middle of second chunk)
-        storage.fake_failed_stream(&hash, 1500);
-
-        let mut stream = storage.download_bytes(&hash).await?;
-        let mut downloaded = Vec::new();
-        let mut error_occurred = false;
-
-        while let Some(chunk_result) = stream.next().await {
-            match chunk_result {
-                Ok(chunk) => downloaded.extend_from_slice(&chunk),
-                Err(_) => {
-                    error_occurred = true;
-                    break;
-                }
-            }
+        struct TestCase {
+            total_size: usize, // Total size of test data in bytes
+            fail_at: usize,    // Position where stream should fail
         }
 
-        assert!(error_occurred, "Expected stream to fail");
-        assert_eq!(
-            downloaded.len(),
-            1500,
-            "Expected exactly 1500 bytes before failure"
-        );
-        assert_eq!(
-            &data[..1500],
-            &downloaded[..],
-            "Data mismatch before failure point"
-        );
+        let test_cases = [
+            TestCase {
+                total_size: 3000, // ~3 chunks
+                fail_at: 1500,    // Middle of second chunk
+            },
+            TestCase {
+                total_size: 1000, // <1 chunk
+                fail_at: 500,     // Middle of first chunk
+            },
+            TestCase {
+                total_size: 5000, // ~5 chunks
+                fail_at: 3072,    // End of third chunk
+            },
+            TestCase {
+                total_size: 2048, // 2 chunks exactly
+                fail_at: 1024,    // At first chunk boundary
+            },
+        ];
+
+        for (i, test_case) in test_cases.iter().enumerate() {
+            let storage = FakeStorage::new();
+            let data = vec![i as u8; test_case.total_size]; // Fill with different values for each case
+            let hash = storage.upload_bytes(data.clone()).await?;
+
+            storage.fake_failed_stream(&hash, test_case.fail_at);
+
+            let mut stream = storage.download_bytes(&hash).await?;
+            let mut downloaded = Vec::new();
+            let mut error_occurred = false;
+
+            while let Some(chunk_result) = stream.next().await {
+                match chunk_result {
+                    Ok(chunk) => downloaded.extend_from_slice(&chunk),
+                    Err(_) => {
+                        error_occurred = true;
+                        break;
+                    }
+                }
+            }
+
+            assert!(
+                error_occurred,
+                "Case {}: Expected stream to fail at {} bytes",
+                i, test_case.fail_at
+            );
+            assert_eq!(
+                downloaded.len(),
+                test_case.fail_at,
+                "Case {}: Expected exactly {} bytes before failure",
+                i,
+                test_case.fail_at
+            );
+            assert_eq!(
+                &data[..test_case.fail_at],
+                &downloaded[..],
+                "Case {}: Data mismatch before failure point",
+                i
+            );
+        }
 
         Ok(())
     }
