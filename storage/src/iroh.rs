@@ -6,8 +6,11 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use core::net::SocketAddr;
 use futures::stream;
-use iroh::client::blobs::ReadAtLen;
-use iroh::{blobs::Hash, client::Iroh as Client};
+use futures_lite::{Stream, StreamExt};
+use iroh::{
+    blobs::{util::SetTagOption, Hash},
+    client::{blobs::ReadAtLen, Iroh as Client},
+};
 use std::sync::Arc;
 use std::{path::Path, str::FromStr};
 
@@ -146,28 +149,48 @@ impl ChunkIdMapper<u64> for IrohChunkIdMapper {
     }
 }
 
-use futures::StreamExt;
-
 #[async_trait]
 impl Storage for IrohStorage {
     type ChunkId = u64;
     type ChunkIdMapper = IrohChunkIdMapper;
 
     async fn upload_bytes(&self, bytes: impl Into<Bytes> + Send) -> Result<String, StorageError> {
-        let blob = self.client().blobs().add_bytes(bytes).await.unwrap();
+        // This is a workaround to avoid using `add_bytes` which has a problem with large files
+        // https://discord.com/channels/1229504999910801469/1277697450353623222/1316793879776989184
+        // The issue is already fixed https://github.com/n0-computer/iroh-blobs/pull/36
+        // But because switching to a new iroh version with the given time constrain is not very
+        // feasible, we use the workaround for now.
+        // There is an issue to track it https://github.com/hokunet/entanglement/issues/27
+        let stream = chunked_bytes_stream(bytes.into(), 1024 * 64).map(Ok);
+
+        let progress = self
+            .client()
+            .blobs()
+            .add_stream(stream, SetTagOption::Auto)
+            .await
+            .map_err(|e| StorageError::StorageError(storage::wrap_error(e)))?;
+
+        let blob = progress
+            .finish()
+            .await
+            .map_err(|e| StorageError::StorageError(storage::wrap_error(e)))?;
+
         Ok(blob.hash.to_string())
     }
 
     async fn download_bytes(&self, hash: &str) -> Result<ByteStream, StorageError> {
         let hash = parse_hash(hash)?;
+
         let reader = self
             .client()
             .blobs()
             .read(hash)
             .await
             .map_err(|e| StorageError::StorageError(storage::wrap_error(e)))?;
+
         let stream = reader
             .map(|res| res.map_err(|e| StorageError::StorageError(storage::wrap_error(e.into()))));
+
         Ok(Box::pin(stream))
     }
 
@@ -249,6 +272,12 @@ impl Storage for IrohStorage {
             num_chunks: (reader.size() + CHUNK_SIZE - 1) / CHUNK_SIZE,
         })
     }
+}
+
+fn chunked_bytes_stream(mut b: Bytes, c: usize) -> impl Stream<Item = Bytes> {
+    futures_lite::stream::iter(std::iter::from_fn(move || {
+        Some(b.split_to(b.len().min(c))).filter(|x| !x.is_empty())
+    }))
 }
 
 #[cfg(test)]
