@@ -361,8 +361,7 @@ impl<T: Storage> Entangler<T> {
                 }
                 all_chunks.extend(repaired_chunks);
 
-                let num_chunks =
-                    (metadata.num_bytes + metadata.chunk_size - 1) / metadata.chunk_size;
+                let num_chunks = metadata.num_bytes.div_ceil(metadata.chunk_size);
                 let mut data = BytesMut::with_capacity((num_chunks * CHUNK_SIZE) as usize);
                 for index in 0..num_chunks {
                     let chunk_id = mapper.index_to_id(index)?;
@@ -397,7 +396,7 @@ impl<T: Storage> Entangler<T> {
     ) -> std::result::Result<HashMap<T::ChunkId, Bytes>, Error> {
         let positioner = Positioner::new(
             metadata.s as u64,
-            (metadata.num_bytes + metadata.chunk_size - 1) / metadata.chunk_size,
+            metadata.num_bytes.div_ceil(metadata.chunk_size),
         );
         Repairer::new(&self.storage, positioner, metadata, mapper)
             .repair_chunks(missing_indexes.clone())
@@ -416,7 +415,7 @@ async fn read_stream(mut stream: storage::ByteStream) -> Result<Bytes, anyhow::E
 
 fn bytes_to_chunks(bytes: Bytes, chunk_size: u64) -> Vec<Bytes> {
     let chunk_size = chunk_size as usize;
-    let mut chunks = Vec::with_capacity((bytes.len() + chunk_size - 1) / chunk_size);
+    let mut chunks = Vec::with_capacity(bytes.len().div_ceil(chunk_size));
     let mut start = 0;
 
     while start < bytes.len() {

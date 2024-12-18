@@ -42,7 +42,7 @@ fn xor_chunks(chunk1: &Bytes, chunk2: &Bytes) -> Bytes {
     Bytes::from(chunk)
 }
 
-impl<'a, 'b, S: Storage> Repairer<'a, S> {
+impl<'a, S: Storage> Repairer<'a, S> {
     pub fn new(
         storage: &'a S,
         positioner: Positioner,

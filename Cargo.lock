@@ -274,7 +274,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1f7a89a8ee5889d2593ae422ce6e1bb03e48a0e8a16e4fa0882dfcbe7e182ef"
 dependencies = [
  "bytes",
- "futures-lite 2.3.0",
+ "futures-lite 2.5.0",
  "genawaiter",
  "iroh-blake3",
  "iroh-io",
@@ -1304,9 +1304,9 @@ dependencies = [
 
 [[package]]
 name = "futures-lite"
-version = "2.3.0"
+version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52527eb5074e35e9339c6b4e8d12600c7128b68fb25dcb9fa9dec18f7c25f3a5"
+checksum = "cef40d21ae2c515b51041df9ed313ed21e572df340ea58a922a0aefe7e8891a1"
 dependencies = [
  "fastrand 2.1.0",
  "futures-core",
@@ -1927,7 +1927,7 @@ dependencies = [
  "bytes",
  "derive_more",
  "futures-buffered",
- "futures-lite 2.3.0",
+ "futures-lite 2.5.0",
  "futures-util",
  "genawaiter",
  "hex",
@@ -2015,7 +2015,7 @@ dependencies = [
  "chrono",
  "derive_more",
  "futures-buffered",
- "futures-lite 2.3.0",
+ "futures-lite 2.5.0",
  "genawaiter",
  "hashlink",
  "hex",
@@ -2057,7 +2057,7 @@ dependencies = [
  "derive_more",
  "ed25519-dalek",
  "futures-buffered",
- "futures-lite 2.3.0",
+ "futures-lite 2.5.0",
  "futures-util",
  "hex",
  "iroh-base",
@@ -2096,7 +2096,7 @@ dependencies = [
  "derive_more",
  "ed25519-dalek",
  "futures-concurrency",
- "futures-lite 2.3.0",
+ "futures-lite 2.5.0",
  "futures-util",
  "indexmap",
  "iroh-base",
@@ -2119,7 +2119,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "74d1047ad5ca29ab4ff316b6830d86e7ea52cea54325e4d4a849692e1274b498"
 dependencies = [
  "bytes",
- "futures-lite 2.3.0",
+ "futures-lite 2.5.0",
  "pin-project",
  "smallvec",
  "tokio",
@@ -2161,7 +2161,7 @@ dependencies = [
  "duct",
  "futures-buffered",
  "futures-concurrency",
- "futures-lite 2.3.0",
+ "futures-lite 2.5.0",
  "futures-sink",
  "futures-util",
  "genawaiter",
@@ -3360,7 +3360,7 @@ dependencies = [
  "derive_more",
  "educe",
  "flume",
- "futures-lite 2.3.0",
+ "futures-lite 2.5.0",
  "futures-sink",
  "futures-util",
  "hex",
@@ -4280,6 +4280,7 @@ dependencies = [
  "bytes",
  "cid",
  "futures",
+ "futures-lite 2.5.0",
  "iroh",
  "multihash",
  "serde",
