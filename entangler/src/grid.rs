@@ -177,7 +177,7 @@ impl Positioner {
 
     fn calculate_lw_aligned_width(num_items: u64, height: u64) -> u64 {
         let lw = height * height;
-        ((num_items + lw - 1) / lw) * height
+        num_items.div_ceil(lw) * height
     }
 
     /// Normalizes the given position by making sure out-of-bounds position is wrapped along axises.
@@ -279,7 +279,7 @@ impl Grid {
             return Err(Error::InvalidNumItems(num_items, height));
         }
 
-        let num_cols = (num_items + height - 1) / height;
+        let num_cols = num_items.div_ceil(height);
         let mut grid: Vec<Vec<Bytes>> = Vec::with_capacity(num_cols as usize);
         for _ in 0..num_cols {
             grid.push(vec![Bytes::new(); height as usize]);
@@ -360,8 +360,8 @@ fn build_column_first_grid(data: Vec<Bytes>, height: u64) -> Result<Vec<Vec<Byte
         return Err(Error::InvalidNumItems(data.len() as u64, height));
     }
 
-    let num_cols = (data.len() as u64 + height - 1) / height;
-    let mut grid: Vec<Vec<Bytes>> = Vec::with_capacity(num_cols as usize);
+    let num_cols = data.len().div_ceil(height as usize);
+    let mut grid: Vec<Vec<Bytes>> = Vec::with_capacity(num_cols);
     for _ in 0..num_cols {
         grid.push(Vec::with_capacity(height as usize));
     }

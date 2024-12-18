@@ -269,7 +269,7 @@ impl Storage for IrohStorage {
 
         Ok(IrohChunkIdMapper {
             hash: hash.to_string(),
-            num_chunks: (reader.size() + CHUNK_SIZE - 1) / CHUNK_SIZE,
+            num_chunks: reader.size().div_ceil(CHUNK_SIZE),
         })
     }
 }
