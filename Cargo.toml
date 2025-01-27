@@ -11,20 +11,15 @@ license = "MIT OR Apache-2.0"
 readme = "./README.md"
 repository = "https://github.com/textileio/entanglement"
 keywords = [
-    "alpha entanglement",
-    "error correction",
-    "data availability",
-    "distributed systems",
-    "iroh",
-    "ipfs",
+    "recall",
+    "alpha-entanglement",
+    "data-availability",
 ]
 version = "0.1.0"
 
 [workspace.dependencies]
 anyhow = "1.0.82"
 async-trait = "0.1.80"
-bao = "0.12.1"
-blake3 = "1.5.3"
 bytes = "1.6.0"
 cid = { version = "0.10.1", default-features = false, features = [
     "serde-codec",
@@ -37,12 +32,12 @@ clap = { version = "4.1.14", features = [
     "string",
     "unicode",
 ] }
-clap-stdin = { version = "0.4.0", features = ["tokio"] }
-iroh = "0.26"
+clap-stdin = { version = "0.6.0", features = ["tokio"] }
+iroh = "0.28.1"
 futures = "0.3.17"
-futures-lite = "2.5"
+futures-lite = "2.5.0"
 serde = { version = "1.0.197", features = ["derive"] }
 serde_json = "1.0.115"
 stderrlog = "0.6.0"
-thiserror = "1"
+thiserror = "2.0.4"
 tokio = { version = "1.37.0", features = ["fs", "macros", "rt-multi-thread"] }
