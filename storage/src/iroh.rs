@@ -160,7 +160,7 @@ impl Storage for IrohStorage {
         // The issue is already fixed https://github.com/n0-computer/iroh-blobs/pull/36
         // But because switching to a new iroh version with the given time constrain is not very
         // feasible, we use the workaround for now.
-        // There is an issue to track it https://github.com/hokunet/entanglement/issues/27
+        // There is an issue to track it https://github.com/recallnet/entanglement/issues/27
         let stream = chunked_bytes_stream(bytes.into(), 1024 * 64).map(Ok);
 
         let progress = self
