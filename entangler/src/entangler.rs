@@ -321,7 +321,7 @@ impl<T: Storage> Entangler<T> {
         }
     }
 
-    pub(crate) async fn download_metadata(&self, metadata_hash: &str) -> Result<Metadata, Error> {
+    pub async fn download_metadata(&self, metadata_hash: &str) -> Result<Metadata, Error> {
         let stream = self.storage.download_bytes(metadata_hash).await?;
         Ok(serde_json::from_slice(&read_stream(stream).await?)?)
     }
