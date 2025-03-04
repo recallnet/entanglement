@@ -6,12 +6,19 @@ use std::collections::HashMap;
 
 use crate::parity::StrandType;
 
+/// Blob struct that holds information about the blob.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlobData {
+    pub hash: String,
+    pub size: u64,
+    pub info: HashMap<String, String>,
+}
+
 /// Metadata struct that holds information about the original blob and the parity blobs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Metadata {
-    pub orig_hash: String,
-    pub parity_hashes: HashMap<StrandType, String>,
-    pub num_bytes: u64,
+    pub blob: BlobData,
+    pub parities: HashMap<StrandType, BlobData>,
     pub chunk_size: u64,
     pub s: u8,
     pub p: u8,

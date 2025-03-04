@@ -14,7 +14,7 @@ use crate::grid::{Grid, Positioner};
 use crate::repairer::{self, Repairer};
 use crate::stream::{RepairingChunkStream, RepairingStream};
 use crate::Config;
-use crate::Metadata;
+use crate::{BlobData, Metadata};
 
 pub const CHUNK_SIZE: u64 = 1024;
 
@@ -155,17 +155,27 @@ impl<T: Storage> Entangler<T> {
 
         let exec = executer::Executer::new(self.config.alpha);
 
-        let mut parity_hashes = HashMap::new();
+        let mut parity_blobs = HashMap::new();
         for parity_grid in exec.iter_parities(orig_grid) {
             let data = parity_grid.grid.assemble_data();
-            let parity_result = self.storage.upload_bytes(data).await?;
-            parity_hashes.insert(parity_grid.strand_type, parity_result.hash);
+            let upload_result = self.storage.upload_bytes(data).await?;
+            parity_blobs.insert(
+                parity_grid.strand_type,
+                BlobData {
+                    hash: upload_result.hash,
+                    size: upload_result.size as u64,
+                    info: upload_result.info,
+                },
+            );
         }
 
         let metadata = Metadata {
-            orig_hash: hash,
-            parity_hashes,
-            num_bytes: num_bytes as u64,
+            blob: BlobData {
+                hash: hash.clone(),
+                size: num_bytes as u64,
+                info: HashMap::new(),
+            },
+            parities: parity_blobs,
             chunk_size: CHUNK_SIZE,
             s: self.config.s,
             p: self.config.s,
@@ -361,7 +371,7 @@ impl<T: Storage> Entangler<T> {
                 }
                 all_chunks.extend(repaired_chunks);
 
-                let num_chunks = metadata.num_bytes.div_ceil(metadata.chunk_size);
+                let num_chunks = metadata.blob.size.div_ceil(metadata.chunk_size);
                 let mut data = BytesMut::with_capacity((num_chunks * CHUNK_SIZE) as usize);
                 for index in 0..num_chunks {
                     let chunk_id = mapper.index_to_id(index)?;
@@ -396,7 +406,7 @@ impl<T: Storage> Entangler<T> {
     ) -> std::result::Result<HashMap<T::ChunkId, Bytes>, Error> {
         let positioner = Positioner::new(
             metadata.s as u64,
-            metadata.num_bytes.div_ceil(metadata.chunk_size),
+            metadata.blob.size.div_ceil(metadata.chunk_size),
         );
         Repairer::new(&self.storage, positioner, metadata, mapper)
             .repair_chunks(missing_indexes.clone())
@@ -537,9 +547,12 @@ mod tests {
         );
 
         let metadata = Metadata {
-            orig_hash: hash.clone(),
-            parity_hashes: HashMap::new(),
-            num_bytes: 18,
+            blob: BlobData {
+                hash: hash.clone(),
+                size: 18,
+                info: HashMap::new(),
+            },
+            parities: HashMap::new(),
             chunk_size: 6,
             s: 3,
             p: 3,

@@ -59,8 +59,8 @@ async fn load_parity_data_to_node<S>(
 
     let metadata_bytes = target_node.blobs().read_to_bytes(metadata_hash).await?;
     let metadata: Metadata = serde_json::from_slice(&metadata_bytes)?;
-    for parity_hash in metadata.parity_hashes.values() {
-        let parity_hash = iroh::blobs::Hash::from_str(parity_hash)?;
+    for blob_data in metadata.parities.values() {
+        let parity_hash = iroh::blobs::Hash::from_str(&blob_data.hash)?;
         target_node
             .blobs()
             .download(parity_hash, node_addr.clone())
@@ -103,11 +103,11 @@ async fn test_upload_bytes_to_iroh() -> Result<()> {
     let metadata_bytes = node.blobs().read_to_bytes(metadata_hash).await?;
 
     let metadata: Metadata = serde_json::from_slice(&metadata_bytes)?;
-    assert_eq!(metadata.orig_hash, hashes.0, "metadata orig_hash mismatch");
+    assert_eq!(metadata.blob.hash, hashes.0, "metadata blob.hash mismatch");
     assert_eq!(
-        metadata.num_bytes,
+        metadata.blob.size,
         bytes.len() as u64,
-        "metadata size mismatch"
+        "metadata blob.size mismatch"
     );
     assert_eq!(
         metadata.chunk_size, CHUNK_SIZE,
@@ -116,8 +116,8 @@ async fn test_upload_bytes_to_iroh() -> Result<()> {
     assert_eq!(metadata.s, HEIGHT as u8, "metadata s mismatch");
     assert_eq!(metadata.p, HEIGHT as u8, "metadata p mismatch");
 
-    for (strand_type, parity_hash) in &metadata.parity_hashes {
-        let parity_hash = iroh::blobs::Hash::from_str(parity_hash)?;
+    for (strand_type, blob_data) in &metadata.parities {
+        let parity_hash = iroh::blobs::Hash::from_str(&blob_data.hash)?;
         let parity = node.blobs().read_to_bytes(parity_hash).await?;
         let mut expected_parity =
             BytesMut::with_capacity(NUM_CHUNKS as usize * CHUNK_SIZE as usize);
@@ -339,7 +339,7 @@ async fn if_stream_fails_should_repair_and_continue_where_left_off() -> Result<(
 }
 
 fn make_parity_unavailable(st: &FakeStorage, metadata: &Metadata, strand: StrandType) {
-    let hash = &metadata.parity_hashes[&strand];
+    let hash = &metadata.parities[&strand].hash;
     st.fake_failed_download(hash);
     st.fake_failed_chunks(hash, (0..NUM_CHUNKS).collect());
 }
@@ -401,7 +401,7 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
         TestCase {
             name: "1 chunk is missing and only L strand is available",
             setup: |st, metadata| {
-                st.fake_failed_chunks(&metadata.orig_hash, vec![2]);
+                st.fake_failed_chunks(&metadata.blob.hash, vec![2]);
 
                 make_parity_unavailable(st, metadata, StrandType::Right);
                 make_parity_unavailable(st, metadata, StrandType::Horizontal);
@@ -411,7 +411,7 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
         TestCase {
             name: "1 chunk is missing and only R strand is available",
             setup: |st, metadata| {
-                st.fake_failed_chunks(&metadata.orig_hash, vec![2]);
+                st.fake_failed_chunks(&metadata.blob.hash, vec![2]);
 
                 make_parity_unavailable(st, metadata, StrandType::Left);
                 make_parity_unavailable(st, metadata, StrandType::Horizontal);
@@ -421,7 +421,7 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
         TestCase {
             name: "1 chunk is missing and only H strand is available",
             setup: |st, metadata| {
-                st.fake_failed_chunks(&metadata.orig_hash, vec![2]);
+                st.fake_failed_chunks(&metadata.blob.hash, vec![2]);
 
                 make_parity_unavailable(st, metadata, StrandType::Left);
                 make_parity_unavailable(st, metadata, StrandType::Right);
@@ -431,7 +431,7 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
         TestCase {
             name: "several disjoint chunks are missing",
             setup: |st, metadata| {
-                st.fake_failed_chunks(&metadata.orig_hash, vec![1, 3, 10, 13, 21, 23]);
+                st.fake_failed_chunks(&metadata.blob.hash, vec![1, 3, 10, 13, 21, 23]);
 
                 make_parity_unavailable(st, metadata, StrandType::Left);
                 make_parity_unavailable(st, metadata, StrandType::Horizontal);
@@ -441,7 +441,7 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
         TestCase {
             name: "no parity is available, should fail",
             setup: |st, metadata| {
-                st.fake_failed_chunks(&metadata.orig_hash, vec![2]);
+                st.fake_failed_chunks(&metadata.blob.hash, vec![2]);
 
                 make_parity_unavailable(st, metadata, StrandType::Left);
                 make_parity_unavailable(st, metadata, StrandType::Horizontal);
@@ -452,7 +452,7 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
         TestCase {
             name: "an island of missing chunks (only left parity available)",
             setup: |st, metadata| {
-                st.fake_failed_chunks(&metadata.orig_hash, get_chunk_island());
+                st.fake_failed_chunks(&metadata.blob.hash, get_chunk_island());
 
                 make_parity_unavailable(st, metadata, StrandType::Horizontal);
                 make_parity_unavailable(st, metadata, StrandType::Right);
@@ -462,7 +462,7 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
         TestCase {
             name: "an island of missing chunks (only horizontal parity available)",
             setup: |st, metadata| {
-                st.fake_failed_chunks(&metadata.orig_hash, get_chunk_island());
+                st.fake_failed_chunks(&metadata.blob.hash, get_chunk_island());
 
                 make_parity_unavailable(st, metadata, StrandType::Left);
                 make_parity_unavailable(st, metadata, StrandType::Right);
@@ -472,7 +472,7 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
         TestCase {
             name: "an island of missing chunks (only right parity available)",
             setup: |st, metadata| {
-                st.fake_failed_chunks(&metadata.orig_hash, get_chunk_island());
+                st.fake_failed_chunks(&metadata.blob.hash, get_chunk_island());
 
                 make_parity_unavailable(st, metadata, StrandType::Left);
                 make_parity_unavailable(st, metadata, StrandType::Horizontal);
@@ -482,7 +482,7 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
         TestCase {
             name: "several islands of missing chunks (only left parity available)",
             setup: |st, metadata| {
-                st.fake_failed_chunks(&metadata.orig_hash, get_several_chunk_islands());
+                st.fake_failed_chunks(&metadata.blob.hash, get_several_chunk_islands());
 
                 make_parity_unavailable(st, metadata, StrandType::Horizontal);
                 make_parity_unavailable(st, metadata, StrandType::Right);
@@ -492,7 +492,7 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
         TestCase {
             name: "several islands of missing chunks (only horizontal parity available)",
             setup: |st, metadata| {
-                st.fake_failed_chunks(&metadata.orig_hash, get_several_chunk_islands());
+                st.fake_failed_chunks(&metadata.blob.hash, get_several_chunk_islands());
 
                 make_parity_unavailable(st, metadata, StrandType::Left);
                 make_parity_unavailable(st, metadata, StrandType::Right);
@@ -502,7 +502,7 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
         TestCase {
             name: "several islands of missing chunks (only right parity available)",
             setup: |st, metadata| {
-                st.fake_failed_chunks(&metadata.orig_hash, get_several_chunk_islands());
+                st.fake_failed_chunks(&metadata.blob.hash, get_several_chunk_islands());
 
                 make_parity_unavailable(st, metadata, StrandType::Left);
                 make_parity_unavailable(st, metadata, StrandType::Horizontal);
@@ -512,7 +512,7 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
         TestCase {
             name: "only 1 chunk at (2, 2) is available and left parity is unavailable",
             setup: |st, metadata| {
-                st.fake_failed_chunks(&metadata.orig_hash, (0..12).chain(13..CHUNK_SIZE).collect());
+                st.fake_failed_chunks(&metadata.blob.hash, (0..12).chain(13..CHUNK_SIZE).collect());
 
                 make_parity_unavailable(st, metadata, StrandType::Left);
             },
@@ -521,7 +521,7 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
         TestCase {
             name: "only 1 chunk at (3, 2) is available and left parity is unavailable",
             setup: |st, metadata| {
-                st.fake_failed_chunks(&metadata.orig_hash, (0..17).chain(18..CHUNK_SIZE).collect());
+                st.fake_failed_chunks(&metadata.blob.hash, (0..17).chain(18..CHUNK_SIZE).collect());
 
                 make_parity_unavailable(st, metadata, StrandType::Left);
             },
@@ -530,7 +530,7 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
         TestCase {
             name: "only 1 chunk at (4, 1) is available and left parity is unavailable",
             setup: |st, metadata| {
-                st.fake_failed_chunks(&metadata.orig_hash, (0..21).chain(22..CHUNK_SIZE).collect());
+                st.fake_failed_chunks(&metadata.blob.hash, (0..21).chain(22..CHUNK_SIZE).collect());
 
                 make_parity_unavailable(st, metadata, StrandType::Left);
             },
@@ -539,7 +539,7 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
         TestCase {
             name: "only 1 chunk at (2, 2) is available and right parity is unavailable",
             setup: |st, metadata| {
-                st.fake_failed_chunks(&metadata.orig_hash, (0..12).chain(13..CHUNK_SIZE).collect());
+                st.fake_failed_chunks(&metadata.blob.hash, (0..12).chain(13..CHUNK_SIZE).collect());
 
                 make_parity_unavailable(st, metadata, StrandType::Right);
             },
@@ -548,7 +548,7 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
         TestCase {
             name: "only 1 chunk at (3, 2) is available and right parity is unavailable",
             setup: |st, metadata| {
-                st.fake_failed_chunks(&metadata.orig_hash, (0..17).chain(18..CHUNK_SIZE).collect());
+                st.fake_failed_chunks(&metadata.blob.hash, (0..17).chain(18..CHUNK_SIZE).collect());
 
                 make_parity_unavailable(st, metadata, StrandType::Right);
             },
@@ -557,7 +557,7 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
         TestCase {
             name: "only 1 chunk at (4, 1) is available and right parity is unavailable",
             setup: |st, metadata| {
-                st.fake_failed_chunks(&metadata.orig_hash, (0..21).chain(22..CHUNK_SIZE).collect());
+                st.fake_failed_chunks(&metadata.blob.hash, (0..21).chain(22..CHUNK_SIZE).collect());
 
                 make_parity_unavailable(st, metadata, StrandType::Right);
             },
@@ -566,7 +566,7 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
         TestCase {
             name: "only 1 chunk at (2, 2) is available and horizontal parity is unavailable",
             setup: |st, metadata| {
-                st.fake_failed_chunks(&metadata.orig_hash, (0..12).chain(13..CHUNK_SIZE).collect());
+                st.fake_failed_chunks(&metadata.blob.hash, (0..12).chain(13..CHUNK_SIZE).collect());
 
                 make_parity_unavailable(st, metadata, StrandType::Horizontal);
             },
@@ -575,7 +575,7 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
         TestCase {
             name: "only 1 chunk at (3, 2) is available and horizontal parity is unavailable",
             setup: |st, metadata| {
-                st.fake_failed_chunks(&metadata.orig_hash, (0..17).chain(18..CHUNK_SIZE).collect());
+                st.fake_failed_chunks(&metadata.blob.hash, (0..17).chain(18..CHUNK_SIZE).collect());
 
                 make_parity_unavailable(st, metadata, StrandType::Horizontal);
             },
@@ -584,7 +584,7 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
         TestCase {
             name: "only 1 chunk at (4, 1) is available and horizontal parity is unavailable",
             setup: |st, metadata| {
-                st.fake_failed_chunks(&metadata.orig_hash, (0..21).chain(22..CHUNK_SIZE).collect());
+                st.fake_failed_chunks(&metadata.blob.hash, (0..21).chain(22..CHUNK_SIZE).collect());
 
                 make_parity_unavailable(st, metadata, StrandType::Horizontal);
             },
@@ -593,11 +593,11 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
         TestCase {
             name: "only 1 chunk at (4, 1) is available, left parity and 1 strand revolution on horizontal parity",
             setup: |st, metadata| {
-                st.fake_failed_chunks(&metadata.orig_hash, (0..21).chain(22..CHUNK_SIZE).collect());
+                st.fake_failed_chunks(&metadata.blob.hash, (0..21).chain(22..CHUNK_SIZE).collect());
 
                 make_parity_unavailable(st, metadata, StrandType::Right);
 
-                let h_parity_hash = &metadata.parity_hashes[&StrandType::Horizontal];
+                let h_parity_hash = &metadata.parities[&StrandType::Horizontal].hash;
                 st.fake_failed_download(h_parity_hash);
                 st.fake_failed_chunks(h_parity_hash, get_all_chunks_but_strand_revolution(StrandType::Horizontal));
             },
@@ -606,11 +606,11 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
         TestCase {
             name: "only 1 chunk at (4, 1) is available, horizontal parity and 1 strand revolution on right parity",
             setup: |st, metadata| {
-                st.fake_failed_chunks(&metadata.orig_hash, (0..21).chain(22..CHUNK_SIZE).collect());
+                st.fake_failed_chunks(&metadata.blob.hash, (0..21).chain(22..CHUNK_SIZE).collect());
 
                 make_parity_unavailable(st, metadata, StrandType::Left);
 
-                let r_parity_hash = &metadata.parity_hashes[&StrandType::Right];
+                let r_parity_hash = &metadata.parities[&StrandType::Right].hash;
                 st.fake_failed_download(r_parity_hash);
                 st.fake_failed_chunks(r_parity_hash, get_all_chunks_but_strand_revolution(StrandType::Right));
             },
@@ -619,11 +619,11 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
         TestCase {
             name: "only 1 chunk at (4, 1) is available, right parity and 1 strand revolution on left parity",
             setup: |st, metadata| {
-                st.fake_failed_chunks(&metadata.orig_hash, (0..21).chain(22..CHUNK_SIZE).collect());
+                st.fake_failed_chunks(&metadata.blob.hash, (0..21).chain(22..CHUNK_SIZE).collect());
 
                 make_parity_unavailable(st, metadata, StrandType::Horizontal);
 
-                let l_parity_hash = &metadata.parity_hashes[&StrandType::Left];
+                let l_parity_hash = &metadata.parities[&StrandType::Left].hash;
                 st.fake_failed_download(l_parity_hash);
                 st.fake_failed_chunks(l_parity_hash, get_all_chunks_but_strand_revolution(StrandType::Left));
             },
@@ -656,7 +656,7 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
 
             let metadata = load_metadata(&hashes.1, &mock_storage).await?;
 
-            mock_storage.fake_failed_download(&metadata.orig_hash);
+            mock_storage.fake_failed_download(&metadata.blob.hash);
 
             (case.setup)(&mock_storage, &metadata);
 
@@ -703,7 +703,7 @@ async fn test_download_chunks_range_and_repair_scenarios() -> Result<()> {
         TestCase {
             name: "1 chunk is missing and only L strand is available",
             setup: |st, metadata| {
-                st.fake_failed_chunks(&metadata.orig_hash, vec![12]);
+                st.fake_failed_chunks(&metadata.blob.hash, vec![12]);
 
                 make_parity_unavailable(st, metadata, StrandType::Right);
                 make_parity_unavailable(st, metadata, StrandType::Horizontal);
@@ -750,7 +750,7 @@ async fn test_download_chunks_range_and_repair_scenarios() -> Result<()> {
         TestCase {
             name: "a chunk column is missing and only horizontal strand is available",
             setup: |st, metadata| {
-                st.fake_failed_chunks(&metadata.orig_hash, (10..10 + HEIGHT).collect());
+                st.fake_failed_chunks(&metadata.blob.hash, (10..10 + HEIGHT).collect());
 
                 make_parity_unavailable(st, metadata, StrandType::Left);
                 make_parity_unavailable(st, metadata, StrandType::Right);
@@ -778,7 +778,7 @@ async fn test_download_chunks_range_and_repair_scenarios() -> Result<()> {
             name: "a horizontal stripe of chunks is missing and only R strand is available",
             setup: |st, metadata| {
                 st.fake_failed_chunks(
-                    &metadata.orig_hash,
+                    &metadata.blob.hash,
                     vec![12, 13, 17, 18, 22, 23, 27, 28, 32, 33],
                 );
 
@@ -825,7 +825,7 @@ async fn test_download_chunks_range_and_repair_scenarios() -> Result<()> {
                 let hashes = ent.upload(bytes.clone()).await?;
                 let metadata = load_metadata(&hashes.1, &mock_storage).await?;
 
-                mock_storage.fake_failed_download(&metadata.orig_hash);
+                mock_storage.fake_failed_download(&metadata.blob.hash);
 
                 (case.setup)(&mock_storage, &metadata);
 
