@@ -39,10 +39,10 @@
 //! async fn main() -> anyhow::Result<()> {
 //!     let storage = IrohStorage::new_in_memory().await?;
 //!     let data = b"Hello, world!".to_vec();
-//!     let hash = storage.upload_bytes(data.clone()).await?;
+//!     let upload_result = storage.upload_bytes(data.clone()).await?;
 //!
 //!     // Download the data as a single blob
-//!     let mut stream = storage.download_bytes(&hash).await?;
+//!     let mut stream = storage.download_bytes(&upload_result.hash).await?;
 //!     let mut downloaded = Vec::with_capacity(stream.size_hint().0);
 //!     while let Some(chunk) = stream.next().await {
 //!         downloaded.extend_from_slice(&chunk?);
@@ -50,7 +50,7 @@
 //!     assert_eq!(data, downloaded);
 //!
 //!     // Iterate through chunks
-//!     let mut chunk_stream = storage.iter_chunks(&hash).await?;
+//!     let mut chunk_stream = storage.iter_chunks(&upload_result.hash).await?;
 //!     while let Some((chunk_id, chunk_result)) = chunk_stream.next().await {
 //!         let chunk = chunk_result?;
 //!         println!("Got chunk {}: {:?} bytes", chunk_id, chunk.len());

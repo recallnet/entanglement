@@ -137,9 +137,9 @@ impl<T: Storage> Entangler<T> {
     /// The hash of the original data and the hash of the metadata.
     pub async fn upload(&self, bytes: impl Into<Bytes> + Send) -> Result<(String, String)> {
         let bytes: Bytes = bytes.into();
-        let orig_hash = self.storage.upload_bytes(bytes.clone()).await?;
-        let metadata_hash = self.entangle(bytes, orig_hash.clone()).await?;
-        Ok((orig_hash, metadata_hash))
+        let upload_result = self.storage.upload_bytes(bytes.clone()).await?;
+        let metadata_hash = self.entangle(bytes, upload_result.hash.clone()).await?;
+        Ok((upload_result.hash, metadata_hash))
     }
 
     /// Creates entangled parity blobs for the given data and uploads them to the storage backend.
@@ -158,8 +158,8 @@ impl<T: Storage> Entangler<T> {
         let mut parity_hashes = HashMap::new();
         for parity_grid in exec.iter_parities(orig_grid) {
             let data = parity_grid.grid.assemble_data();
-            let parity_hash = self.storage.upload_bytes(data).await?;
-            parity_hashes.insert(parity_grid.strand_type, parity_hash);
+            let parity_result = self.storage.upload_bytes(data).await?;
+            parity_hashes.insert(parity_grid.strand_type, parity_result.hash);
         }
 
         let metadata = Metadata {
@@ -172,9 +172,9 @@ impl<T: Storage> Entangler<T> {
         };
 
         let metadata = serde_json::to_string(&metadata).unwrap();
-        let metadata_hash = self.storage.upload_bytes(metadata).await?;
+        let metadata_result = self.storage.upload_bytes(metadata).await?;
 
-        Ok(metadata_hash)
+        Ok(metadata_result.hash)
     }
 
     /// Entangles the uploaded data identified by the given hash, uploads entangled parity blobs

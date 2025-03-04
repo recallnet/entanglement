@@ -67,13 +67,25 @@ pub trait ChunkIdMapper<T: ChunkId>: Clone + Send {
     fn id_to_index(&self, chunk_id: &T) -> Result<u64, Error>;
 }
 
+/// Result of an upload operation.
+#[cfg_attr(any(test, feature = "mock"), derive(Clone))]
+#[derive(Debug, PartialEq)]
+pub struct UploadResult {
+    /// The hash of the uploaded blob.
+    pub hash: String,
+    /// Size of the uploaded blob in bytes.
+    pub size: usize,
+    /// Additional storage-specific information.
+    pub info: std::collections::HashMap<String, String>,
+}
+
 /// Trait representing a storage backend.
 #[async_trait]
 pub trait Storage: Send + Sync + Clone {
     type ChunkId: ChunkId;
     type ChunkIdMapper: ChunkIdMapper<Self::ChunkId>;
 
-    /// Uploads the given bytes to the storage and returns a hash identifying the stored data.
+    /// Uploads the given bytes to the storage and returns a result identifying the stored data.
     ///
     /// # Arguments
     ///
@@ -81,8 +93,9 @@ pub trait Storage: Send + Sync + Clone {
     ///
     /// # Returns
     ///
-    /// A `Result` containing the hash of the uploaded data, or an error if the upload fails.
-    async fn upload_bytes(&self, bytes: impl Into<Bytes> + Send) -> Result<String, Error>;
+    /// A `Result` containing the upload result with hash of the uploaded data and additional info,
+    /// or an error if the upload fails.
+    async fn upload_bytes(&self, bytes: impl Into<Bytes> + Send) -> Result<UploadResult, Error>;
 
     /// Downloads the bytes identified by the given hash as a stream of bytes.
     ///

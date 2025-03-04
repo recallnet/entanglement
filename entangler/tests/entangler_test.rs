@@ -647,9 +647,9 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
             let bytes = create_bytes(NUM_CHUNKS);
 
             let hashes = if upload_method == "upload" {
-                let hash = mock_storage.upload_bytes(bytes.clone()).await?;
-                let metadata_hash = ent.entangle_uploaded(hash.clone()).await?;
-                (hash, metadata_hash)
+                let upload_result = mock_storage.upload_bytes(bytes.clone()).await?;
+                let metadata_hash = ent.entangle_uploaded(upload_result.hash.clone()).await?;
+                (upload_result.hash, metadata_hash)
             } else {
                 ent.upload(bytes.clone()).await?
             };
@@ -963,37 +963,46 @@ async fn if_download_fails_it_should_upload_to_storage_after_repair() -> Result<
         let bytes = create_bytes(NUM_CHUNKS);
 
         let storage = FakeStorage::new();
-        let hash = storage.upload_bytes(bytes.clone()).await?;
+        let upload_result = storage.upload_bytes(bytes.clone()).await?;
 
         let mut conf = Config::new(3, 3, 3);
         conf.always_repair = t.always_repair;
         let ent = Entangler::new(storage.clone(), conf).unwrap();
-        let m_hash = ent.entangle_uploaded(hash.clone()).await?;
+        let m_hash = ent.entangle_uploaded(upload_result.hash.clone()).await?;
 
-        storage.fake_failed_download(&hash);
-        storage.fake_failed_chunks(&hash, vec![1]);
+        storage.fake_failed_download(&upload_result.hash);
+        storage.fake_failed_chunks(&upload_result.hash, vec![1]);
 
-        let res = storage.download_bytes(&hash).await;
+        let res = storage.download_bytes(&upload_result.hash).await;
         assert!(matches!(res, Err(storage::Error::BlobNotFound(_))));
 
         match t.method {
             Method::Download => {
-                let stream = ent.download(&hash, Some(&m_hash)).await?;
+                let stream = ent.download(&upload_result.hash, Some(&m_hash)).await?;
                 let result = read_stream(stream).await;
                 assert!(result.is_ok(), "Failed to download blob: {:?}", result);
             }
             Method::Range => {
                 let stream = ent
-                    .download_range(&hash, ChunkRange::From(0), Some(m_hash))
+                    .download_range(&upload_result.hash, ChunkRange::From(0), Some(m_hash))
                     .await;
-                assert!(stream.is_ok(), "Failed to get range stream: {}", hash);
+                assert!(
+                    stream.is_ok(),
+                    "Failed to get range stream: {}",
+                    upload_result.hash
+                );
                 let result = read_stream(stream.unwrap()).await;
                 assert!(result.is_ok(), "Failed to download range: {:?}", result);
             }
             Method::Chunks => {
                 let ids = vec![0, 1, 2];
-                let stream = ent.download_chunks(hash.clone(), ids.clone(), Some(m_hash));
-                assert!(stream.is_ok(), "Failed to get chunks stream: {}", hash);
+                let stream =
+                    ent.download_chunks(upload_result.hash.clone(), ids.clone(), Some(m_hash));
+                assert!(
+                    stream.is_ok(),
+                    "Failed to get chunks stream: {}",
+                    upload_result.hash
+                );
                 let mut stream = stream.unwrap();
                 let mut index = 0;
                 while let Some((id, res)) = stream.next().await {
@@ -1013,7 +1022,7 @@ async fn if_download_fails_it_should_upload_to_storage_after_repair() -> Result<
             }
         }
 
-        let res = storage.download_bytes(&hash).await;
+        let res = storage.download_bytes(&upload_result.hash).await;
         assert_eq!(
             res.is_ok(),
             t.expect_upload,
