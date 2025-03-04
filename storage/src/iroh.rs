@@ -187,7 +187,7 @@ impl Storage for IrohStorage {
         Ok(storage::UploadResult {
             hash: blob.hash.to_string(),
             info,
-            size,
+            size: size as u64,
         })
     }
 
@@ -481,6 +481,34 @@ mod tests {
             matches!(res.err().unwrap(), StorageError::BlobNotFound(h) if h == non_existing_hash),
             "Expected error because hash does not exist"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_upload_bytes_metadata() -> Result<()> {
+        let storage = IrohStorage::new_in_memory().await?;
+        let data = Bytes::from("Hello, World!");
+        let upload_result = storage.upload_bytes(data.clone()).await?;
+
+        // Verify the UploadResult contains expected fields
+        assert!(!upload_result.hash.is_empty(), "Hash should not be empty");
+        assert_eq!(
+            upload_result.size,
+            data.len() as u64,
+            "Size should match data length"
+        );
+        assert!(
+            upload_result.info.contains_key("tag"),
+            "Should contain tag info"
+        );
+        assert!(
+            upload_result
+                .info
+                .get("tag")
+                .map_or(false, |tag| !tag.is_empty()),
+            "Tag should have a non-empty value"
+        );
+
         Ok(())
     }
 }

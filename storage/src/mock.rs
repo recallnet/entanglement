@@ -140,7 +140,7 @@ impl Storage for FakeStorage {
 
         Ok(UploadResult {
             hash: hash_str,
-            size,
+            size: size as u64,
             info,
         })
     }
@@ -312,7 +312,7 @@ impl Storage for DummyStorage {
         Ok(UploadResult {
             hash: "dummy_hash".to_string(),
             info,
-            size: bytes.len(),
+            size: bytes.len() as u64,
         })
     }
 

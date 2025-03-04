@@ -74,7 +74,7 @@ pub struct UploadResult {
     /// The hash of the uploaded blob.
     pub hash: String,
     /// Size of the uploaded blob in bytes.
-    pub size: usize,
+    pub size: u64,
     /// Additional storage-specific information.
     pub info: std::collections::HashMap<String, String>,
 }
