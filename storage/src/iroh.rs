@@ -8,7 +8,7 @@ use core::net::SocketAddr;
 use futures::stream;
 use futures_lite::{Stream, StreamExt};
 use iroh::{
-    blobs::{util::SetTagOption, Hash},
+    blobs::Hash,
     client::{blobs::ReadAtLen, Iroh as Client},
 };
 use std::sync::Arc;
@@ -163,19 +163,28 @@ impl Storage for IrohStorage {
         // There is an issue to track it https://github.com/recallnet/entanglement/issues/27
         let stream = chunked_bytes_stream(bytes.into(), 1024 * 64).map(Ok);
 
-        let progress = self
+        let batch = self
             .client()
             .blobs()
-            .add_stream(stream, SetTagOption::Auto)
+            .batch()
             .await
             .map_err(|e| StorageError::StorageError(storage::wrap_error(e)))?;
 
-        let blob = progress
-            .finish()
+        let temp_tag = batch
+            .add_stream(stream)
             .await
             .map_err(|e| StorageError::StorageError(storage::wrap_error(e)))?;
 
-        Ok(blob.hash.to_string())
+        let hash = *temp_tag.hash();
+        let new_tag = iroh::blobs::Tag(format!("ent-{hash}").into());
+        batch
+            .persist_to(temp_tag, new_tag)
+            .await
+            .map_err(|e| StorageError::StorageError(storage::wrap_error(e)))?;
+
+        drop(batch);
+
+        Ok(hash.to_string())
     }
 
     async fn download_bytes(&self, hash: &str) -> Result<ByteStream, StorageError> {
