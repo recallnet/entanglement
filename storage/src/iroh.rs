@@ -28,6 +28,9 @@ trait ClientProvider: Send + Sync {
 /// `IrohStorage` is a storage backend that interacts with the Iroh client to store and retrieve data.
 /// It supports various initialization methods, including in-memory and persistent storage, and can
 /// upload and download data in chunks.
+///
+/// Upon upload a blob it will include in the `UploadResult::info` under "tag" key the tag of the 
+/// blob that iroh assigned to the blob with `SetTagOption::Auto`.
 pub struct IrohStorage {
     client_provider: Arc<dyn ClientProvider>,
 }
