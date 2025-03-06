@@ -28,6 +28,8 @@ trait ClientProvider: Send + Sync {
 /// `IrohStorage` is a storage backend that interacts with the Iroh client to store and retrieve data.
 /// It supports various initialization methods, including in-memory and persistent storage, and can
 /// upload and download data in chunks.
+///
+/// To every uploaded blob, a tag is attached with the name `ent-{hash}` where `hash` is the hash of the blob.
 pub struct IrohStorage {
     client_provider: Arc<dyn ClientProvider>,
 }
@@ -467,6 +469,31 @@ mod tests {
         assert!(
             matches!(res.err().unwrap(), StorageError::BlobNotFound(h) if h == non_existing_hash),
             "Expected error because hash does not exist"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_uploaded_blob_should_have_tag_attached() -> Result<()> {
+        let node = iroh::node::Node::memory().spawn().await?;
+        let storage = IrohStorage::from_client(node.client().clone());
+        let data = Bytes::from(vec![0u8; 2048]);
+        let hash = storage.upload_bytes(data.clone()).await?;
+
+        let mut tags_stream = storage.client().tags().list().await?;
+        let mut tags = Vec::new();
+
+        while let Some(tag) = tags_stream.next().await {
+            assert!(tag.is_ok(), "Expected tag to be listed");
+            tags.push(tag?.name);
+        }
+
+        assert_eq!(tags.len(), 1, "Expected exactly one tag");
+        let expected_tag = iroh::blobs::Tag(format!("ent-{}", hash).into());
+        assert_eq!(
+            tags[0], expected_tag,
+            "Tag is unexpected. Expected: {:?}, got: {:?}",
+            expected_tag, tags[0]
         );
         Ok(())
     }
