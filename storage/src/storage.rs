@@ -68,8 +68,7 @@ pub trait ChunkIdMapper<T: ChunkId>: Clone + Send {
 }
 
 /// Result of an upload operation.
-#[cfg_attr(any(test, feature = "mock"), derive(Clone))]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct UploadResult {
     /// The hash of the uploaded blob.
     pub hash: String,

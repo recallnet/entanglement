@@ -4,10 +4,10 @@
 pub mod entangler;
 pub use entangler::*;
 pub mod metadata;
-pub mod parity;
-pub use metadata::*;
+pub use metadata::Metadata;
 pub mod config;
 pub use config::*;
+pub mod parity;
 
 mod executer;
 mod grid;
