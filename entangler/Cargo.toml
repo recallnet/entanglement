@@ -16,6 +16,7 @@ async-trait = { workspace = true }
 bytes = { workspace = true }
 cid = { workspace = true }
 iroh = { workspace = true }
+iroh-blobs = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
