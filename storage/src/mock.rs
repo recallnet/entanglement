@@ -573,7 +573,10 @@ mod tests {
         // Verify the UploadResult contains the expected fields
         assert!(!result.hash.is_empty());
         assert!(result.info.contains_key("tag"));
-        assert_eq!(*result.info.get("tag").unwrap(), format!("tag-{}", result.hash));
+        assert_eq!(
+            *result.info.get("tag").unwrap(),
+            format!("tag-{}", result.hash)
+        );
 
         let mut stream = storage.download_bytes(&result.hash).await?;
         let mut downloaded = Vec::new();

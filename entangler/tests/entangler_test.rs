@@ -660,8 +660,7 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
 
             let result = if upload_method == "upload" {
                 let upload_result = mock_storage.upload_bytes(bytes.clone()).await?;
-                let result = ent.entangle_uploaded(upload_result.hash.clone()).await?;
-                result
+                ent.entangle_uploaded(upload_result.hash.clone()).await?
             } else {
                 ent.upload(bytes.clone()).await?
             };

@@ -30,7 +30,7 @@ trait ClientProvider: Send + Sync {
 /// It supports various initialization methods, including in-memory and persistent storage, and can
 /// upload and download data in chunks.
 ///
-/// Upon upload a blob it will include in the `UploadResult::info` under "tag" key the tag of the 
+/// Upon upload a blob it will include in the `UploadResult::info` under "tag" key the tag of the
 /// blob that iroh assigned to the blob with `SetTagOption::Auto`.
 pub struct IrohStorage {
     client_provider: Arc<dyn ClientProvider>,
@@ -172,13 +172,16 @@ impl Storage for IrohStorage {
         // feasible, we use the workaround for now.
         // There is an issue to track it https://github.com/recallnet/entanglement/issues/27
         let stream = chunked_bytes_stream(bytes, 1024 * 64).map(Ok);
-        
+
         let tag = format!("ent-{}", Uuid::new_v4());
 
         let progress = self
             .client()
             .blobs()
-            .add_stream(stream, SetTagOption::Named(iroh::blobs::Tag::from(tag.clone())))
+            .add_stream(
+                stream,
+                SetTagOption::Named(iroh::blobs::Tag::from(tag.clone())),
+            )
             .await
             .map_err(|e| StorageError::StorageError(storage::wrap_error(e)))?;
 

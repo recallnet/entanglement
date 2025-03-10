@@ -125,7 +125,10 @@ async fn main() -> anyhow::Result<()> {
         Commands::Upload(args) => {
             let bytes = tokio::fs::read(args.file.clone()).await?;
             let result = entangler.upload(bytes).await?;
-            println!("uploaded file. Hash: {}, Meta: {}", result.orig_hash, result.metadata_hash);
+            println!(
+                "uploaded file. Hash: {}, Meta: {}",
+                result.orig_hash, result.metadata_hash
+            );
         }
         Commands::Download(args) => {
             let stream = entangler
