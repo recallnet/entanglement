@@ -4,14 +4,13 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use bytes::Bytes;
-use core::net::SocketAddr;
 use futures::stream;
-use futures_lite::{Stream, StreamExt};
-use iroh::{
-    blobs::{util::SetTagOption, Hash},
-    client::{blobs::ReadAtLen, Iroh as Client},
-};
-use std::sync::Arc;
+use futures_lite::StreamExt;
+use iroh::protocol::Router;
+use iroh::Endpoint;
+use iroh_blobs::net_protocol::Blobs;
+use iroh_blobs::rpc::client::blobs::{MemClient, ReadAtLen};
+use iroh_blobs::Hash;
 use std::{path::Path, str::FromStr};
 
 use crate::storage::{
@@ -20,96 +19,68 @@ use crate::storage::{
 
 const CHUNK_SIZE: u64 = 1024;
 
-/// `ClientProvider` is a trait for types that can provide an Iroh client.
-trait ClientProvider: Send + Sync {
-    fn client(&self) -> &Client;
-}
-
 /// `IrohStorage` is a storage backend that interacts with the Iroh client to store and retrieve data.
 /// It supports various initialization methods, including in-memory and persistent storage, and can
 /// upload and download data in chunks.
-pub struct IrohStorage {
-    client_provider: Arc<dyn ClientProvider>,
+#[derive(Debug, Clone)]
+pub enum IrohStorage {
+    Full { router: Router, blobs: BlobsWrapper },
+    Client { blobs_client: MemClient },
 }
 
-impl Clone for IrohStorage {
-    fn clone(&self) -> Self {
-        IrohStorage {
-            client_provider: Arc::clone(&self.client_provider),
-        }
-    }
+#[derive(Debug, Clone)]
+pub enum BlobsWrapper {
+    Mem(Blobs<iroh_blobs::store::mem::Store>),
+    Fs(Blobs<iroh_blobs::store::fs::Store>),
 }
 
-/// `ClientHolder` is a wrapper around an Iroh client that implements `ClientProvider`.
-#[derive(Clone)]
-struct ClientHolder {
-    client: Client,
-}
-
-impl ClientProvider for ClientHolder {
-    fn client(&self) -> &Client {
-        &self.client
-    }
-}
-
-/// `NodeHolder` is a wrapper around an Iroh node that implements `ClientProvider`.
-struct NodeHolder<S> {
-    node: iroh::node::Node<S>,
-}
-
-impl<S: iroh::blobs::store::Store> ClientProvider for NodeHolder<S> {
-    fn client(&self) -> &Client {
-        self.node.client()
-    }
-}
-
-impl<S: Clone> Clone for NodeHolder<S> {
-    fn clone(&self) -> Self {
-        NodeHolder {
-            node: self.node.clone(),
+impl BlobsWrapper {
+    pub fn client(&self) -> &MemClient {
+        match self {
+            BlobsWrapper::Mem(b) => b.client(),
+            BlobsWrapper::Fs(b) => b.client(),
         }
     }
 }
 
 impl IrohStorage {
-    pub async fn from_path(root: impl AsRef<Path>) -> Result<Self> {
-        let client = Client::connect_path(root).await?;
-        Ok(Self {
-            client_provider: Arc::new(ClientHolder { client }),
-        })
-    }
-
-    pub async fn from_addr(addr: SocketAddr) -> Result<Self> {
-        let client = Client::connect_addr(addr).await?;
-        Ok(Self {
-            client_provider: Arc::new(ClientHolder { client }),
-        })
-    }
-
-    pub fn from_client(client: Client) -> Self {
-        Self {
-            client_provider: Arc::new(ClientHolder { client }),
-        }
-    }
-
-    pub fn from_node<S: iroh::blobs::store::Store + 'static>(node: iroh::node::Node<S>) -> Self {
-        Self {
-            client_provider: Arc::new(NodeHolder { node }),
-        }
+    pub fn from_client(blobs_client: MemClient) -> Self {
+        Self::Client { blobs_client }
     }
 
     pub async fn new_in_memory() -> Result<Self> {
-        let node = iroh::node::Node::memory().spawn().await?;
-        Ok(Self::from_node(node))
+        let endpoint = Endpoint::builder().discovery_n0().bind().await?;
+        let blobs = Blobs::memory().build(&endpoint);
+        let router = Router::builder(endpoint)
+            .accept(iroh_blobs::ALPN, blobs.clone())
+            .spawn()
+            .await?;
+
+        Ok(Self::Full {
+            router,
+            blobs: BlobsWrapper::Mem(blobs),
+        })
     }
 
     pub async fn new_permanent(root: impl AsRef<Path>) -> Result<Self> {
-        let node = iroh::node::Node::persistent(root).await?.spawn().await?;
-        Ok(Self::from_client(node.client().clone()))
+        let endpoint = Endpoint::builder().discovery_n0().bind().await?;
+        let blobs = Blobs::persistent(root).await?.build(&endpoint);
+        let router = Router::builder(endpoint)
+            .accept(iroh_blobs::ALPN, blobs.clone())
+            .spawn()
+            .await?;
+
+        Ok(Self::Full {
+            router,
+            blobs: BlobsWrapper::Fs(blobs),
+        })
     }
 
-    fn client(&self) -> &Client {
-        self.client_provider.client()
+    pub fn blobs_client(&self) -> &MemClient {
+        match self {
+            Self::Full { blobs, .. } => blobs.client(),
+            Self::Client { blobs_client } => blobs_client,
+        }
     }
 }
 
@@ -155,23 +126,9 @@ impl Storage for IrohStorage {
     type ChunkIdMapper = IrohChunkIdMapper;
 
     async fn upload_bytes(&self, bytes: impl Into<Bytes> + Send) -> Result<String, StorageError> {
-        // This is a workaround to avoid using `add_bytes` which has a problem with large files
-        // https://discord.com/channels/1229504999910801469/1277697450353623222/1316793879776989184
-        // The issue is already fixed https://github.com/n0-computer/iroh-blobs/pull/36
-        // But because switching to a new iroh version with the given time constrain is not very
-        // feasible, we use the workaround for now.
-        // There is an issue to track it https://github.com/recallnet/entanglement/issues/27
-        let stream = chunked_bytes_stream(bytes.into(), 1024 * 64).map(Ok);
-
-        let progress = self
-            .client()
-            .blobs()
-            .add_stream(stream, SetTagOption::Auto)
-            .await
-            .map_err(|e| StorageError::StorageError(storage::wrap_error(e)))?;
-
-        let blob = progress
-            .finish()
+        let blob = self
+            .blobs_client()
+            .add_bytes(bytes)
             .await
             .map_err(|e| StorageError::StorageError(storage::wrap_error(e)))?;
 
@@ -182,8 +139,7 @@ impl Storage for IrohStorage {
         let hash = parse_hash(hash)?;
 
         let reader = self
-            .client()
-            .blobs()
+            .blobs_client()
             .read(hash)
             .await
             .map_err(|e| StorageError::StorageError(storage::wrap_error(e)))?;
@@ -196,7 +152,7 @@ impl Storage for IrohStorage {
 
     async fn iter_chunks(&self, hash: &str) -> Result<ChunkStream<Self::ChunkId>, StorageError> {
         let hash = parse_hash(hash)?;
-        let reader = self.client().blobs().read(hash).await.map_err(|e| {
+        let reader = self.blobs_client().read(hash).await.map_err(|e| {
             let err_str = e.to_string();
             if err_str.contains("not found") {
                 StorageError::BlobNotFound(hash.to_string())
@@ -207,7 +163,7 @@ impl Storage for IrohStorage {
         let total_size = reader.size();
 
         let stream = stream::unfold(
-            (self.client().blobs().clone(), 0u64),
+            (self.blobs_client().clone(), 0u64),
             move |(client, offset)| async move {
                 if offset >= total_size {
                     return None;
@@ -245,8 +201,7 @@ impl Storage for IrohStorage {
         let hash = parse_hash(hash)?;
         let offset = chunk_id * CHUNK_SIZE;
 
-        self.client()
-            .blobs()
+        self.blobs_client()
             .read_at_to_bytes(hash, offset, ReadAtLen::AtMost(CHUNK_SIZE))
             .await
             .map_err(|e| {
@@ -261,8 +216,7 @@ impl Storage for IrohStorage {
     async fn chunk_id_mapper(&self, hash: &str) -> Result<IrohChunkIdMapper, StorageError> {
         let hash = parse_hash(hash).map_err(|_| StorageError::BlobNotFound(hash.to_string()))?;
         let reader = self
-            .client()
-            .blobs()
+            .blobs_client()
             .read(hash)
             .await
             .map_err(|_| StorageError::BlobNotFound(hash.to_string()))?;
@@ -272,12 +226,6 @@ impl Storage for IrohStorage {
             num_chunks: reader.size().div_ceil(CHUNK_SIZE),
         })
     }
-}
-
-fn chunked_bytes_stream(mut b: Bytes, c: usize) -> impl Stream<Item = Bytes> {
-    futures_lite::stream::iter(std::iter::from_fn(move || {
-        Some(b.split_to(b.len().min(c))).filter(|x| !x.is_empty())
-    }))
 }
 
 #[cfg(test)]
