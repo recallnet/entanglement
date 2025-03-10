@@ -514,7 +514,7 @@ mod tests {
             upload_result
                 .info
                 .get("tag")
-                .map_or(false, |tag| tag.starts_with("ent-") && tag.len() == 4 + 36),
+                .is_some_and(|tag| tag.starts_with("ent-") && tag.len() == 40), // 4 + 36 (uuid)
             "Tag should be in the format \"ent-<uuid>\""
         );
 
