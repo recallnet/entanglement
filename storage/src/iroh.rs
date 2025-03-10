@@ -13,6 +13,7 @@ use iroh::{
 };
 use std::sync::Arc;
 use std::{path::Path, str::FromStr};
+use uuid::Uuid;
 
 use crate::storage::{
     self, ByteStream, ChunkId, ChunkIdMapper, ChunkStream, Error as StorageError, Storage,
@@ -171,11 +172,13 @@ impl Storage for IrohStorage {
         // feasible, we use the workaround for now.
         // There is an issue to track it https://github.com/recallnet/entanglement/issues/27
         let stream = chunked_bytes_stream(bytes, 1024 * 64).map(Ok);
+        
+        let tag = format!("ent-{}", Uuid::new_v4());
 
         let progress = self
             .client()
             .blobs()
-            .add_stream(stream, SetTagOption::Auto)
+            .add_stream(stream, SetTagOption::Named(iroh::blobs::Tag::from(tag.clone())))
             .await
             .map_err(|e| StorageError::StorageError(storage::wrap_error(e)))?;
 
@@ -185,7 +188,7 @@ impl Storage for IrohStorage {
             .map_err(|e| StorageError::StorageError(storage::wrap_error(e)))?;
 
         let mut info = std::collections::HashMap::new();
-        info.insert("tag".to_string(), blob.tag.to_string());
+        info.insert("tag".to_string(), tag);
 
         Ok(storage::UploadResult {
             hash: blob.hash.to_string(),
@@ -508,8 +511,8 @@ mod tests {
             upload_result
                 .info
                 .get("tag")
-                .map_or(false, |tag| !tag.is_empty()),
-            "Tag should have a non-empty value"
+                .map_or(false, |tag| tag.starts_with("ent-") && tag.len() == 4 + 36),
+            "Tag should be in the format \"ent-<uuid>\""
         );
 
         Ok(())

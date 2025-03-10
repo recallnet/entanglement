@@ -22,6 +22,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+uuid = { workspace = true }
 
 multihash = { version = "0.18.1", optional = true }
 sha2 = { version = "0.10.6", optional = true }
