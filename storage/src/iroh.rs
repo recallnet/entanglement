@@ -13,6 +13,7 @@ use iroh::{
 };
 use std::sync::Arc;
 use std::{path::Path, str::FromStr};
+use uuid::Uuid;
 
 use crate::storage::{
     self, ByteStream, ChunkId, ChunkIdMapper, ChunkStream, Error as StorageError, Storage,
@@ -28,6 +29,9 @@ trait ClientProvider: Send + Sync {
 /// `IrohStorage` is a storage backend that interacts with the Iroh client to store and retrieve data.
 /// It supports various initialization methods, including in-memory and persistent storage, and can
 /// upload and download data in chunks.
+///
+/// Upon upload a blob it will include in the `UploadResult::info` under "tag" key the tag of the
+/// blob that iroh assigned to the blob with `SetTagOption::Auto`.
 pub struct IrohStorage {
     client_provider: Arc<dyn ClientProvider>,
 }
@@ -154,19 +158,30 @@ impl Storage for IrohStorage {
     type ChunkId = u64;
     type ChunkIdMapper = IrohChunkIdMapper;
 
-    async fn upload_bytes(&self, bytes: impl Into<Bytes> + Send) -> Result<String, StorageError> {
+    async fn upload_bytes(
+        &self,
+        bytes: impl Into<Bytes> + Send,
+    ) -> Result<storage::UploadResult, StorageError> {
+        let bytes = bytes.into();
+        let size = bytes.len();
+
         // This is a workaround to avoid using `add_bytes` which has a problem with large files
         // https://discord.com/channels/1229504999910801469/1277697450353623222/1316793879776989184
         // The issue is already fixed https://github.com/n0-computer/iroh-blobs/pull/36
         // But because switching to a new iroh version with the given time constrain is not very
         // feasible, we use the workaround for now.
         // There is an issue to track it https://github.com/recallnet/entanglement/issues/27
-        let stream = chunked_bytes_stream(bytes.into(), 1024 * 64).map(Ok);
+        let stream = chunked_bytes_stream(bytes, 1024 * 64).map(Ok);
+
+        let tag = format!("ent-{}", Uuid::new_v4());
 
         let progress = self
             .client()
             .blobs()
-            .add_stream(stream, SetTagOption::Auto)
+            .add_stream(
+                stream,
+                SetTagOption::Named(iroh::blobs::Tag::from(tag.clone())),
+            )
             .await
             .map_err(|e| StorageError::StorageError(storage::wrap_error(e)))?;
 
@@ -175,7 +190,14 @@ impl Storage for IrohStorage {
             .await
             .map_err(|e| StorageError::StorageError(storage::wrap_error(e)))?;
 
-        Ok(blob.hash.to_string())
+        let mut info = std::collections::HashMap::new();
+        info.insert("tag".to_string(), tag);
+
+        Ok(storage::UploadResult {
+            hash: blob.hash.to_string(),
+            info,
+            size: size as u64,
+        })
     }
 
     async fn download_bytes(&self, hash: &str) -> Result<ByteStream, StorageError> {
@@ -298,7 +320,8 @@ mod tests {
     async fn test_iter_chunks_small_blob() -> Result<()> {
         let storage = IrohStorage::new_in_memory().await?;
         let data = Bytes::from("Hello, World!");
-        let hash = storage.upload_bytes(data.clone()).await?;
+        let upload_result = storage.upload_bytes(data.clone()).await?;
+        let hash = upload_result.hash;
 
         let chunks = collect_chunks(&storage, &hash).await?;
 
@@ -311,7 +334,8 @@ mod tests {
     async fn test_iter_chunks_large_blob() -> Result<()> {
         let storage = IrohStorage::new_in_memory().await?;
         let data = Bytes::from(vec![0u8; 3000]); // 3000 bytes, should be 3 chunks
-        let hash = storage.upload_bytes(data.clone()).await?;
+        let upload_result = storage.upload_bytes(data.clone()).await?;
+        let hash = upload_result.hash;
 
         let chunks = collect_chunks(&storage, &hash).await?;
 
@@ -327,7 +351,8 @@ mod tests {
     async fn test_iter_chunks_empty_blob() -> Result<()> {
         let storage = IrohStorage::new_in_memory().await?;
         let data = Bytes::new();
-        let hash = storage.upload_bytes(data).await?;
+        let upload_result = storage.upload_bytes(data).await?;
+        let hash = upload_result.hash;
 
         let chunks = collect_chunks(&storage, &hash).await?;
 
@@ -339,7 +364,8 @@ mod tests {
     async fn test_iter_chunks_exact_multiple() -> Result<()> {
         let storage = IrohStorage::new_in_memory().await?;
         let data = Bytes::from(vec![0u8; 2048]);
-        let hash = storage.upload_bytes(data.clone()).await?;
+        let upload_result = storage.upload_bytes(data.clone()).await?;
+        let hash = upload_result.hash;
 
         let chunks = collect_chunks(&storage, &hash).await?;
 
@@ -362,7 +388,8 @@ mod tests {
     async fn test_download_chunk_small_blob() -> Result<()> {
         let storage = IrohStorage::new_in_memory().await?;
         let data = Bytes::from("Hello, World!");
-        let hash = storage.upload_bytes(data.clone()).await?;
+        let upload_result = storage.upload_bytes(data.clone()).await?;
+        let hash = upload_result.hash;
 
         let chunk = storage.download_chunk(&hash, 0).await?;
         assert_eq!(chunk, data);
@@ -373,7 +400,8 @@ mod tests {
     async fn test_download_chunk_large_blob() -> Result<()> {
         let storage = IrohStorage::new_in_memory().await?;
         let data = Bytes::from(vec![0u8; 3000]); // 3000 bytes, should be 3 chunks
-        let hash = storage.upload_bytes(data.clone()).await?;
+        let upload_result = storage.upload_bytes(data.clone()).await?;
+        let hash = upload_result.hash;
 
         let chunk0 = storage.download_chunk(&hash, 0).await?;
         let chunk1 = storage.download_chunk(&hash, 1).await?;
@@ -390,7 +418,8 @@ mod tests {
     async fn test_download_chunk_exact_multiple() -> Result<()> {
         let storage = IrohStorage::new_in_memory().await?;
         let data = Bytes::from(vec![0u8; 2048]);
-        let hash = storage.upload_bytes(data.clone()).await?;
+        let upload_result = storage.upload_bytes(data.clone()).await?;
+        let hash = upload_result.hash;
 
         let chunk0 = storage.download_chunk(&hash, 0).await?;
         let chunk1 = storage.download_chunk(&hash, 1).await?;
@@ -413,7 +442,8 @@ mod tests {
     async fn test_download_chunk_out_of_bounds() -> Result<()> {
         let storage = IrohStorage::new_in_memory().await?;
         let data = Bytes::from("Hello, World!");
-        let hash = storage.upload_bytes(data).await?;
+        let upload_result = storage.upload_bytes(data).await?;
+        let hash = upload_result.hash;
 
         let result = storage.download_chunk(&hash, 1).await;
         assert!(result.is_err());
@@ -428,7 +458,8 @@ mod tests {
     async fn test_chunk_id_mapper() -> Result<()> {
         let storage = IrohStorage::new_in_memory().await?;
         let data = vec![0u8; 3000]; // 3 chunks
-        let hash = storage.upload_bytes(data).await?;
+        let upload_result = storage.upload_bytes(data).await?;
+        let hash = upload_result.hash;
 
         let mapper = storage.chunk_id_mapper(&hash).await?;
         assert_eq!(mapper.index_to_id(0)?, 0);
@@ -459,6 +490,34 @@ mod tests {
             matches!(res.err().unwrap(), StorageError::BlobNotFound(h) if h == non_existing_hash),
             "Expected error because hash does not exist"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_upload_bytes_metadata() -> Result<()> {
+        let storage = IrohStorage::new_in_memory().await?;
+        let data = Bytes::from("Hello, World!");
+        let upload_result = storage.upload_bytes(data.clone()).await?;
+
+        // Verify the UploadResult contains expected fields
+        assert!(!upload_result.hash.is_empty(), "Hash should not be empty");
+        assert_eq!(
+            upload_result.size,
+            data.len() as u64,
+            "Size should match data length"
+        );
+        assert!(
+            upload_result.info.contains_key("tag"),
+            "Should contain tag info"
+        );
+        assert!(
+            upload_result
+                .info
+                .get("tag")
+                .is_some_and(|tag| tag.starts_with("ent-") && tag.len() == 40), // 4 + 36 (uuid)
+            "Tag should be in the format \"ent-<uuid>\""
+        );
+
         Ok(())
     }
 }
