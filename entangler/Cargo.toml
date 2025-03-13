@@ -22,13 +22,10 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 
-[dependencies.storage]
-path = "../storage"
-features = []
+storage = { version = "0.1.0", path = "../storage", features = [] }
 
-[dev-dependencies.storage]
-path = "../storage"
-features = ["mock"]
+[dev-dependencies]
+storage = { path = "../storage", features = ["mock"] }
 
 [lib]
 doctest = false

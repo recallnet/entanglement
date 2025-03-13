@@ -27,5 +27,5 @@ stderrlog = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 
-entangler = { path = "../entangler" }
-storage = { path = "../storage" }
+entangler = { path = "../entangler", version = "0.1.0" }
+storage = { path = "../storage", version = "0.1.0" }
