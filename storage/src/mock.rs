@@ -5,7 +5,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use bytes::Bytes;
 use cid::Cid;
-use futures::{future::ready, stream};
+use futures::{future::ready, stream, Stream};
 use multihash::{Code, MultihashDigest};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -15,6 +15,17 @@ use std::sync::{Arc, Mutex};
 use crate::storage::{
     ByteStream, ChunkIdMapper, ChunkStream, Error as StorageError, Storage, UploadResult,
 };
+
+// Helper function to convert bytes to a stream for tests
+#[allow(dead_code)]
+fn bytes_to_stream<T>(bytes: T) -> impl Stream<Item = Result<Bytes, StorageError>> + Send + Unpin
+where
+    T: Into<Bytes> + Send + 'static,
+{
+    Box::pin(futures::stream::once(async move {
+        Ok::<Bytes, StorageError>(bytes.into())
+    }))
+}
 
 const CHUNK_SIZE: usize = 1024;
 
@@ -110,11 +121,21 @@ impl Storage for FakeStorage {
     type ChunkId = u64;
     type ChunkIdMapper = FakeChunkIdMapper;
 
-    async fn upload_bytes(
-        &self,
-        bytes: impl Into<Bytes> + Send,
-    ) -> Result<UploadResult, StorageError> {
-        let bytes = bytes.into();
+    async fn upload_bytes<S, E>(&self, stream: S) -> Result<UploadResult, StorageError>
+    where
+        S: Stream<Item = Result<Bytes, E>> + Send + Unpin,
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        // Collect all the bytes from the stream
+        use futures::TryStreamExt;
+        let mut all_bytes = Vec::new();
+        let mut stream = stream.map_err(|e| StorageError::Other(e.to_string()));
+
+        while let Some(bytes_result) = stream.try_next().await? {
+            all_bytes.extend_from_slice(&bytes_result);
+        }
+
+        let bytes = Bytes::from(all_bytes);
         let size = bytes.len();
 
         let mut hasher = Sha256::new();
@@ -301,18 +322,19 @@ impl Storage for DummyStorage {
     type ChunkId = u64;
     type ChunkIdMapper = DummyChunkIdMapper;
 
-    async fn upload_bytes(
-        &self,
-        bytes: impl Into<Bytes> + Send,
-    ) -> Result<UploadResult, StorageError> {
-        let bytes = bytes.into();
+    async fn upload_bytes<S, E>(&self, _stream: S) -> Result<UploadResult, StorageError>
+    where
+        S: Stream<Item = Result<Bytes, E>> + Send + Unpin,
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        // Just create a fixed response for the dummy storage
         let mut info = std::collections::HashMap::new();
         info.insert("mock_info".to_string(), "dummy_storage".to_string());
 
         Ok(UploadResult {
             hash: "dummy_hash".to_string(),
             info,
-            size: bytes.len() as u64,
+            size: 10, // Fixed dummy size
         })
     }
 
@@ -407,10 +429,11 @@ impl Storage for StubStorage {
     type ChunkId = u64;
     type ChunkIdMapper = DummyChunkIdMapper;
 
-    async fn upload_bytes(
-        &self,
-        _bytes: impl Into<Bytes> + Send,
-    ) -> Result<UploadResult, StorageError> {
+    async fn upload_bytes<S, E>(&self, _stream: S) -> Result<UploadResult, StorageError>
+    where
+        S: Stream<Item = Result<Bytes, E>> + Send + Unpin,
+        E: std::error::Error + Send + Sync + 'static,
+    {
         self.upload_bytes_result.clone()
     }
 
@@ -512,13 +535,28 @@ impl Storage for SpyStorage {
     type ChunkId = u64;
     type ChunkIdMapper = DummyChunkIdMapper;
 
-    async fn upload_bytes(
-        &self,
-        bytes: impl Into<Bytes> + Send,
-    ) -> Result<UploadResult, StorageError> {
-        let bytes = bytes.into();
+    async fn upload_bytes<S, E>(&self, stream: S) -> Result<UploadResult, StorageError>
+    where
+        S: Stream<Item = Result<Bytes, E>> + Send + Unpin,
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        // Collect all bytes from the stream to record them
+        use futures::TryStreamExt;
+        let mut all_bytes = Vec::new();
+        let mut stream = stream.map_err(|e| StorageError::Other(e.to_string()));
+
+        while let Some(bytes_result) = stream.try_next().await? {
+            all_bytes.extend_from_slice(&bytes_result);
+        }
+
+        let bytes = Bytes::from(all_bytes);
         self.upload_bytes_calls.write().unwrap().push(bytes.clone());
-        self.inner.upload_bytes(bytes).await
+
+        // Create a new stream with the same bytes for the inner storage
+        let inner_stream = Box::pin(futures::stream::once(async move {
+            Ok::<Bytes, StorageError>(bytes)
+        }));
+        self.inner.upload_bytes(inner_stream).await
     }
 
     async fn download_bytes(&self, hash: &str) -> Result<ByteStream, StorageError> {
@@ -568,7 +606,7 @@ mod tests {
     async fn test_upload_and_download_bytes() -> Result<()> {
         let storage = FakeStorage::new();
         let data = b"Hello, world!".to_vec();
-        let result = storage.upload_bytes(data.clone()).await?;
+        let result = storage.upload_bytes(bytes_to_stream(data.clone())).await?;
 
         // Verify the UploadResult contains the expected fields
         assert!(!result.hash.is_empty());
@@ -598,7 +636,7 @@ mod tests {
     async fn test_fake_failed_download() -> Result<()> {
         let storage = FakeStorage::new();
         let data = b"Test data".to_vec();
-        let result = storage.upload_bytes(data).await?;
+        let result = storage.upload_bytes(bytes_to_stream(data)).await?;
 
         storage.fake_failed_download(&result.hash);
         let result = storage.download_bytes(&result.hash).await;
@@ -610,13 +648,13 @@ mod tests {
     async fn faked_failed_blob_download_after_upload_should_be_available() -> Result<()> {
         let storage = FakeStorage::new();
         let data = b"Test data".to_vec();
-        let result = storage.upload_bytes(data.clone()).await?;
+        let result = storage.upload_bytes(bytes_to_stream(data.clone())).await?;
 
         let dl_result = storage.download_bytes(&result.hash).await;
         assert!(dl_result.is_ok());
 
         storage.fake_failed_chunks(&result.hash, vec![0]);
-        let new_result = storage.upload_bytes(data).await?;
+        let new_result = storage.upload_bytes(bytes_to_stream(data)).await?;
 
         let chunk_result = storage.download_chunk(&new_result.hash, 0).await;
         assert!(
@@ -630,13 +668,13 @@ mod tests {
     async fn faked_failed_chunk_download_after_upload_should_be_available() -> Result<()> {
         let storage = FakeStorage::new();
         let data = b"Test data".to_vec();
-        let result = storage.upload_bytes(data.clone()).await?;
+        let result = storage.upload_bytes(bytes_to_stream(data.clone())).await?;
 
         let dl_result = storage.download_bytes(&result.hash).await;
         assert!(dl_result.is_ok());
 
         storage.fake_failed_download(&result.hash);
-        let new_result = storage.upload_bytes(data).await?;
+        let new_result = storage.upload_bytes(bytes_to_stream(data)).await?;
 
         let dl_result = storage.download_bytes(&new_result.hash).await;
         assert!(
@@ -650,7 +688,7 @@ mod tests {
     async fn test_iter_chunks() -> Result<()> {
         let storage = FakeStorage::new();
         let data = (0..3000).map(|i| (i % 256) as u8).collect::<Vec<u8>>(); // 3 chunks with predictable content
-        let result = storage.upload_bytes(data.clone()).await?;
+        let result = storage.upload_bytes(bytes_to_stream(data.clone())).await?;
 
         let mut stream = storage.iter_chunks(&result.hash).await?;
         let mut chunk_count = 0;
@@ -697,7 +735,7 @@ mod tests {
     async fn test_fake_failed_chunks() -> Result<()> {
         let storage = FakeStorage::new();
         let data = vec![0u8; 3000]; // 3 chunks
-        let result = storage.upload_bytes(data).await?;
+        let result = storage.upload_bytes(bytes_to_stream(data)).await?;
 
         let fail_chunk_index = 1;
         storage.fake_failed_chunks(&result.hash, vec![fail_chunk_index]);
@@ -733,7 +771,7 @@ mod tests {
     async fn test_large_upload() -> Result<()> {
         let storage = FakeStorage::new();
         let data = vec![0u8; 10 * CHUNK_SIZE * CHUNK_SIZE]; // 10 MB
-        let result = storage.upload_bytes(data.clone()).await?;
+        let result = storage.upload_bytes(bytes_to_stream(data.clone())).await?;
 
         let mut stream = storage.download_bytes(&result.hash).await?;
         let mut downloaded = Vec::new();
@@ -749,7 +787,7 @@ mod tests {
     async fn test_empty_upload() -> Result<()> {
         let storage = FakeStorage::new();
         let data = vec![];
-        let result = storage.upload_bytes(data.clone()).await?;
+        let result = storage.upload_bytes(bytes_to_stream(data.clone())).await?;
 
         let mut stream = storage.download_bytes(&result.hash).await?;
         let mut downloaded = Vec::new();
@@ -767,8 +805,8 @@ mod tests {
         let data2 = b"Data 2".to_vec();
 
         let (result1, result2) = tokio::join!(
-            storage.upload_bytes(data1.clone()),
-            storage.upload_bytes(data2.clone())
+            storage.upload_bytes(bytes_to_stream(data1.clone())),
+            storage.upload_bytes(bytes_to_stream(data2.clone()))
         );
 
         let result1 = result1?;
@@ -810,7 +848,7 @@ mod tests {
     async fn test_download_chunk() -> Result<()> {
         let storage = FakeStorage::new();
         let data = vec![0u8; 3000]; // 3 chunks
-        let result = storage.upload_bytes(data.clone()).await?;
+        let result = storage.upload_bytes(bytes_to_stream(data.clone())).await?;
 
         for chunk_id in 0..3 {
             let chunk = storage.download_chunk(&result.hash, chunk_id).await?;
@@ -834,7 +872,7 @@ mod tests {
     async fn test_download_chunk_out_of_bounds() -> Result<()> {
         let storage = FakeStorage::new();
         let data = vec![0u8; 3000]; // 3 chunks
-        let result = storage.upload_bytes(data).await?;
+        let result = storage.upload_bytes(bytes_to_stream(data)).await?;
 
         let err = storage.download_chunk(&result.hash, 3).await.unwrap_err();
         if let StorageError::ChunkNotFound(chunk_id, hash, _) = err {
@@ -850,7 +888,7 @@ mod tests {
     async fn test_fake_failed_chunk_download() -> Result<()> {
         let storage = FakeStorage::new();
         let data = vec![0u8; 3000]; // 3 chunks
-        let result = storage.upload_bytes(data).await?;
+        let result = storage.upload_bytes(bytes_to_stream(data)).await?;
 
         let fail_chunk_index = 1;
         storage.fake_failed_chunks(&result.hash, vec![fail_chunk_index]);
@@ -881,7 +919,7 @@ mod tests {
     async fn test_chunk_id_mapper() -> Result<()> {
         let storage = FakeStorage::new();
         let data = vec![0u8; 3000]; // 3 chunks
-        let result = storage.upload_bytes(data).await?;
+        let result = storage.upload_bytes(bytes_to_stream(data)).await?;
 
         let mapper = storage.chunk_id_mapper(&result.hash).await?;
         assert_eq!(mapper.index_to_id(0)?, 0);
@@ -926,7 +964,7 @@ mod tests {
         for (i, test_case) in test_cases.iter().enumerate() {
             let storage = FakeStorage::new();
             let data = vec![i as u8; test_case.total_size];
-            let result = storage.upload_bytes(data.clone()).await?;
+            let result = storage.upload_bytes(bytes_to_stream(data.clone())).await?;
 
             storage.fake_failed_stream(&result.hash, test_case.fail_at);
 
@@ -971,7 +1009,7 @@ mod tests {
     async fn faked_failed_stream_after_upload_should_be_available() -> Result<()> {
         let storage = FakeStorage::new();
         let data = vec![0u8; 3000]; // 3 chunks
-        let result = storage.upload_bytes(data.clone()).await?;
+        let result = storage.upload_bytes(bytes_to_stream(data.clone())).await?;
 
         // First verify stream fails at 1500 bytes
         storage.fake_failed_stream(&result.hash, 1500);
@@ -990,7 +1028,7 @@ mod tests {
         );
 
         // Now upload the same data again and verify stream works completely
-        let new_result = storage.upload_bytes(data.clone()).await?;
+        let new_result = storage.upload_bytes(bytes_to_stream(data.clone())).await?;
         let mut stream = storage.download_bytes(&new_result.hash).await?;
         let mut downloaded = Vec::with_capacity(3000);
         while let Some(chunk_result) = stream.next().await {
@@ -1010,7 +1048,7 @@ mod tests {
     async fn test_upload_and_download_bytes_with_poll() -> Result<()> {
         let storage = FakeStorage::new();
         let data = vec![1u8; 3000];
-        let result = storage.upload_bytes(data.clone()).await?;
+        let result = storage.upload_bytes(bytes_to_stream(data.clone())).await?;
 
         let stream = storage.download_bytes(&result.hash).await?;
         let mut pinned = Box::pin(stream);
@@ -1041,7 +1079,7 @@ mod tests {
     async fn test_upload_and_download_bytes_with_poll_failed_stream() -> Result<()> {
         let storage = FakeStorage::new();
         let data = vec![1u8; 3000];
-        let result = storage.upload_bytes(data.clone()).await?;
+        let result = storage.upload_bytes(bytes_to_stream(data.clone())).await?;
 
         storage.fake_failed_stream(&result.hash, 1500);
 

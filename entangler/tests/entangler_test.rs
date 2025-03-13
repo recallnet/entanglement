@@ -76,6 +76,16 @@ async fn load_parity_data_to_node<S>(
 // Use read_stream from entangler module instead
 use recall_entangler::read_stream;
 
+// Helper function to convert bytes to a stream for tests
+fn bytes_to_stream<T>(bytes: T) -> storage::ByteStream
+where
+    T: Into<Bytes> + Send + 'static,
+{
+    Box::pin(futures::stream::once(async move {
+        Ok::<Bytes, storage::Error>(bytes.into())
+    }))
+}
+
 // Helper function to create a byte stream from bytes
 fn create_byte_stream(bytes: Bytes) -> ByteStream {
     Box::pin(futures::stream::once(async move {
@@ -669,7 +679,9 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
             let bytes = create_bytes(NUM_CHUNKS);
 
             let result = if upload_method == "upload" {
-                let upload_result = mock_storage.upload_bytes(bytes.clone()).await?;
+                let upload_result = mock_storage
+                    .upload_bytes(bytes_to_stream(bytes.clone()))
+                    .await?;
                 ent.entangle_uploaded(upload_result.hash.clone()).await?
             } else {
                 let byte_stream = create_byte_stream(bytes.clone());
@@ -991,7 +1003,7 @@ async fn if_download_fails_it_should_upload_to_storage_after_repair() -> Result<
         let bytes = create_bytes(NUM_CHUNKS);
 
         let storage = FakeStorage::new();
-        let upload_result = storage.upload_bytes(bytes.clone()).await?;
+        let upload_result = storage.upload_bytes(bytes_to_stream(bytes.clone())).await?;
 
         let mut conf = Config::new(3, 3, 3);
         conf.always_repair = t.always_repair;
@@ -1181,7 +1193,7 @@ async fn test_metadata_fields() -> Result<()> {
             let byte_stream = create_byte_stream(bytes.clone());
             ent.upload(byte_stream).await?
         } else {
-            let upload_result = storage.upload_bytes(bytes.clone()).await?;
+            let upload_result = storage.upload_bytes(bytes_to_stream(bytes.clone())).await?;
             ent.entangle_uploaded(upload_result.hash.clone()).await?
         };
 

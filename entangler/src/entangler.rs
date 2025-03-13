@@ -154,10 +154,15 @@ impl<T: Storage> Entangler<T> {
     {
         let mut upload_results = Vec::new();
 
-        // Convert the stream to bytes for the storage
-        let bytes = read_stream(stream).await?;
-        let orig_upload_result = self.storage.upload_bytes(bytes.clone()).await?;
+        let orig_upload_result = self.storage.upload_bytes(stream).await?;
         upload_results.push(orig_upload_result.clone());
+
+        // Download the data we just uploaded to process it for parity generation
+        let downloaded_stream = self
+            .storage
+            .download_bytes(&orig_upload_result.hash)
+            .await?;
+        let bytes = read_stream(downloaded_stream).await?;
 
         let (metadata_hash, parity_results) = self
             .entangle(bytes, orig_upload_result.hash.clone())
@@ -175,6 +180,11 @@ impl<T: Storage> Entangler<T> {
     /// The original data is also uploaded to the storage backend.
     /// Returns the hash of the metadata and the upload results for parity blobs and metadata.
     async fn entangle(&self, bytes: Bytes, hash: String) -> Result<(String, Vec<UploadResult>)> {
+    async fn entangle(
+        &self,
+        bytes: Bytes,
+        hash: String,
+    ) -> Result<(String, Vec<UploadResult>)> {
         let num_bytes = bytes.len();
 
         let chunks = bytes_to_chunks(bytes, CHUNK_SIZE);
@@ -189,7 +199,11 @@ impl<T: Storage> Entangler<T> {
 
         for parity_grid in exec.iter_parities(orig_grid) {
             let data = parity_grid.grid.assemble_data();
-            let upload_result = self.storage.upload_bytes(data).await?;
+            // Create a stream from the data
+            let data_stream = Box::pin(futures::stream::once(async move {
+                Ok::<Bytes, std::io::Error>(data)
+            }));
+            let upload_result = self.storage.upload_bytes(data_stream).await?;
             parity_hashes.insert(parity_grid.strand_type, upload_result.hash.clone());
             upload_results.push(upload_result);
         }
@@ -204,7 +218,11 @@ impl<T: Storage> Entangler<T> {
         };
 
         let metadata = serde_json::to_string(&metadata).unwrap();
-        let metadata_result = self.storage.upload_bytes(metadata).await?;
+        // Create a stream from the metadata string
+        let metadata_stream = Box::pin(futures::stream::once(async move {
+            Ok::<Bytes, std::io::Error>(Bytes::from(metadata))
+        }));
+        let metadata_result = self.storage.upload_bytes(metadata_stream).await?;
         upload_results.push(metadata_result.clone());
 
         Ok((metadata_result.hash, upload_results))
@@ -415,7 +433,14 @@ impl<T: Storage> Entangler<T> {
 
                 let owned_data = data.freeze();
 
-                self.storage.upload_bytes(owned_data.clone()).await?;
+                // Clone the data for the stream
+                let upload_data = owned_data.clone();
+
+                // Create a stream from the owned data
+                let owned_data_stream = Box::pin(futures::stream::once(async move {
+                    Ok::<Bytes, std::io::Error>(upload_data)
+                }));
+                self.storage.upload_bytes(owned_data_stream).await?;
 
                 let stream = futures::stream::iter((0..num_chunks).map(move |i| {
                     let start = i as usize * CHUNK_SIZE as usize;
