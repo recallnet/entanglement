@@ -996,42 +996,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
 
 [[package]]
-name = "entanglement_cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytes",
- "cid",
- "clap",
- "clap-stdin",
- "entangler",
- "futures",
- "serde",
- "serde_json",
- "stderrlog",
- "storage",
- "thiserror 2.0.11",
- "tokio",
-]
-
-[[package]]
-name = "entangler"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "bytes",
- "cid",
- "futures",
- "iroh",
- "serde",
- "serde_json",
- "storage",
- "thiserror 2.0.11",
- "tokio",
-]
-
-[[package]]
 name = "enum-as-inner"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3745,6 +3709,62 @@ dependencies = [
 ]
 
 [[package]]
+name = "recall_entanglement_cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "cid",
+ "clap",
+ "clap-stdin",
+ "futures",
+ "recall_entanglement_storage",
+ "recall_entangler",
+ "serde",
+ "serde_json",
+ "stderrlog",
+ "thiserror 2.0.11",
+ "tokio",
+]
+
+[[package]]
+name = "recall_entanglement_storage"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "cid",
+ "futures",
+ "futures-lite 2.6.0",
+ "iroh",
+ "multihash",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.11",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "recall_entangler"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "cid",
+ "futures",
+ "iroh",
+ "recall_entanglement_storage",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.11",
+ "tokio",
+]
+
+[[package]]
 name = "redb"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4501,26 +4521,6 @@ dependencies = [
  "log",
  "termcolor",
  "thread_local",
-]
-
-[[package]]
-name = "storage"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "bytes",
- "cid",
- "futures",
- "futures-lite 2.6.0",
- "iroh",
- "multihash",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.11",
- "tokio",
- "uuid",
 ]
 
 [[package]]

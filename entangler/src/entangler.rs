@@ -5,9 +5,9 @@ use anyhow::Result;
 use bytes::{Bytes, BytesMut};
 use futures::TryStreamExt;
 use futures::{Stream, StreamExt};
+use recall_entanglement_storage::{self, ChunkIdMapper, Error as StorageError, Storage};
 use std::collections::HashMap;
 use std::pin::Pin;
-use storage::{self, ChunkIdMapper, Error as StorageError, Storage};
 
 use crate::executer;
 use crate::grid::{Grid, Positioner};
@@ -66,7 +66,7 @@ pub struct EntanglementResult {
     /// The hash of the metadata blob.
     pub metadata_hash: String,
     /// Results from all storage uploads (original blob in case of `upload`, parity blobs, and metadata blob).
-    pub upload_results: Vec<storage::UploadResult>,
+    pub upload_results: Vec<recall_entanglement_storage::UploadResult>,
 }
 
 /// The `Entangler` struct is responsible for managing the entanglement process of data chunks.
@@ -173,7 +173,7 @@ impl<T: Storage> Entangler<T> {
         &self,
         bytes: Bytes,
         hash: String,
-    ) -> Result<(String, Vec<storage::UploadResult>)> {
+    ) -> Result<(String, Vec<recall_entanglement_storage::UploadResult>)> {
         let num_bytes = bytes.len();
 
         let chunks = bytes_to_chunks(bytes, CHUNK_SIZE);
@@ -446,7 +446,9 @@ impl<T: Storage> Entangler<T> {
     }
 }
 
-async fn read_stream(mut stream: storage::ByteStream) -> Result<Bytes, anyhow::Error> {
+async fn read_stream(
+    mut stream: recall_entanglement_storage::ByteStream,
+) -> Result<Bytes, anyhow::Error> {
     let mut bytes = BytesMut::with_capacity(stream.size_hint().0);
     while let Some(chunk) = stream.next().await {
         bytes.extend_from_slice(&chunk?);
@@ -482,7 +484,7 @@ fn add_padding(chunk: &Bytes, chunk_size: usize) -> Bytes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use storage::mock::{DummyStorage, SpyStorage};
+    use recall_entanglement_storage::mock::{DummyStorage, SpyStorage};
 
     #[test]
     fn test_entangler_new_valid_parameters() {

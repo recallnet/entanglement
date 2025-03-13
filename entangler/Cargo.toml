@@ -1,5 +1,5 @@
 [package]
-name = "entangler"
+name = "recall_entangler"
 description = "Entangler that uses the Alpha Entanglement."
 authors.workspace = true
 edition.workspace = true
@@ -22,10 +22,10 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 
-storage = { version = "0.1.0", path = "../storage", features = [] }
+recall_entanglement_storage = { version = "0.1.0", path = "../storage", features = [] }
 
 [dev-dependencies]
-storage = { path = "../storage", features = ["mock"] }
+recall_entanglement_storage = { path = "../storage", features = ["mock"] }
 
 [lib]
 doctest = false
