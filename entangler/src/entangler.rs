@@ -5,7 +5,7 @@ use anyhow::Result;
 use bytes::{Bytes, BytesMut};
 use futures::TryStreamExt;
 use futures::{Stream, StreamExt};
-use recall_entangler_storage::{self, ChunkIdMapper, Error as StorageError, Storage};
+use recall_entangler_storage::{self, ChunkIdMapper, Error as StorageError, Storage, UploadResult};
 use std::collections::HashMap;
 use std::pin::Pin;
 
@@ -66,7 +66,7 @@ pub struct EntanglementResult {
     /// The hash of the metadata blob.
     pub metadata_hash: String,
     /// Results from all storage uploads (original blob in case of `upload`, parity blobs, and metadata blob).
-    pub upload_results: Vec<recall_entangler_storage::UploadResult>,
+    pub upload_results: Vec<UploadResult>,
 }
 
 /// The `Entangler` struct is responsible for managing the entanglement process of data chunks.
@@ -141,16 +141,21 @@ impl<T: Storage> Entangler<T> {
     ///
     /// # Arguments
     ///
-    /// * `bytes` - The data to upload.
+    /// * `stream` - The data stream to upload.
     ///
     /// # Returns
     ///
     /// An `EntanglementResult` containing the hash of the original data, the hash of the metadata,
     /// and all upload results from the underlying storage.
-    pub async fn upload(&self, bytes: impl Into<Bytes> + Send) -> Result<EntanglementResult> {
-        let bytes: Bytes = bytes.into();
+    pub async fn upload<S, E>(&self, stream: S) -> Result<EntanglementResult>
+    where
+        S: Stream<Item = Result<Bytes, E>> + Send + Unpin,
+        E: std::error::Error + Send + Sync + 'static,
+    {
         let mut upload_results = Vec::new();
 
+        // Convert the stream to bytes for the storage
+        let bytes = read_stream(stream).await?;
         let orig_upload_result = self.storage.upload_bytes(bytes.clone()).await?;
         upload_results.push(orig_upload_result.clone());
 
@@ -169,11 +174,7 @@ impl<T: Storage> Entangler<T> {
     /// Creates entangled parity blobs for the given data and uploads them to the storage backend.
     /// The original data is also uploaded to the storage backend.
     /// Returns the hash of the metadata and the upload results for parity blobs and metadata.
-    async fn entangle(
-        &self,
-        bytes: Bytes,
-        hash: String,
-    ) -> Result<(String, Vec<recall_entangler_storage::UploadResult>)> {
+    async fn entangle(&self, bytes: Bytes, hash: String) -> Result<(String, Vec<UploadResult>)> {
         let num_bytes = bytes.len();
 
         let chunks = bytes_to_chunks(bytes, CHUNK_SIZE);
@@ -223,9 +224,8 @@ impl<T: Storage> Entangler<T> {
     /// and all upload results (parity blobs and metadata blob).
     pub async fn entangle_uploaded(&self, hash: String) -> Result<EntanglementResult> {
         let orig_data_stream = self.storage.download_bytes(&hash).await?;
-        let (metadata_hash, upload_results) = self
-            .entangle(read_stream(orig_data_stream).await?, hash.clone())
-            .await?;
+        let bytes = read_stream(orig_data_stream).await?;
+        let (metadata_hash, upload_results) = self.entangle(bytes, hash.clone()).await?;
 
         Ok(EntanglementResult {
             orig_hash: hash,
@@ -446,9 +446,20 @@ impl<T: Storage> Entangler<T> {
     }
 }
 
-async fn read_stream(
-    mut stream: recall_entangler_storage::ByteStream,
-) -> Result<Bytes, anyhow::Error> {
+/// Reads an entire stream into a Bytes object.
+///
+/// # Arguments
+///
+/// * `stream` - The stream to read from.
+///
+/// # Returns
+///
+/// A `Result` containing the bytes read from the stream.
+pub async fn read_stream<S, E>(mut stream: S) -> Result<Bytes, anyhow::Error>
+where
+    S: Stream<Item = Result<Bytes, E>> + Unpin,
+    E: std::error::Error + Send + Sync + 'static,
+{
     let mut bytes = BytesMut::with_capacity(stream.size_hint().0);
     while let Some(chunk) = stream.next().await {
         bytes.extend_from_slice(&chunk?);

@@ -7,8 +7,9 @@
 /// It uses the `clap` crate for command-line argument parsing and `stderrlog` for logging.
 use std::net::SocketAddr;
 
+use bytes::Bytes;
 use clap::{Args, Parser, Subcommand};
-use futures::StreamExt;
+use futures::{stream, StreamExt};
 use std::str::FromStr;
 use stderrlog::Timestamp;
 
@@ -124,7 +125,11 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Upload(args) => {
             let bytes = tokio::fs::read(args.file.clone()).await?;
-            let result = entangler.upload(bytes).await?;
+            // Convert bytes to a Stream
+            let bytes_stream = Box::pin(stream::once(async move {
+                Ok::<Bytes, std::io::Error>(Bytes::from(bytes))
+            }));
+            let result = entangler.upload(bytes_stream).await?;
             println!(
                 "uploaded file. Hash: {}, Meta: {}",
                 result.orig_hash, result.metadata_hash

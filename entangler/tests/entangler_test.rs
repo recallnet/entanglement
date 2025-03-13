@@ -3,9 +3,12 @@
 
 use anyhow::Result;
 use bytes::{BufMut, Bytes, BytesMut};
-use futures::{Stream, StreamExt};
+use futures::StreamExt;
 use recall_entangler::{self, parity::StrandType, ChunkRange, Config, Entangler, Metadata};
-use recall_entangler_storage::{self, mock::FakeStorage, ChunkIdMapper, Storage};
+use recall_entangler_storage::{
+    self, iroh::IrohStorage, mock::FakeStorage, ByteStream, ChunkIdMapper, Error as StorageError,
+    Storage,
+};
 use std::collections::HashSet;
 use std::str::FromStr;
 
@@ -38,8 +41,8 @@ fn xor_chunks(chunk1: &[u8], chunk2: &[u8]) -> Bytes {
 
 fn new_entangler_from_node<S: iroh::blobs::store::Store>(
     node: &iroh::node::Node<S>,
-) -> Result<Entangler<recall_entangler_storage::iroh::IrohStorage>, recall_entangler::Error> {
-    let st = recall_entangler_storage::iroh::IrohStorage::from_client(node.client().clone());
+) -> Result<Entangler<IrohStorage>, recall_entangler::Error> {
+    let st = IrohStorage::from_client(node.client().clone());
     Entangler::new(st, Config::new(3, HEIGHT as u8, HEIGHT as u8))
 }
 
@@ -70,16 +73,14 @@ async fn load_parity_data_to_node<S>(
     Ok(())
 }
 
-async fn read_stream<S, E>(mut stream: S) -> Result<Bytes, anyhow::Error>
-where
-    S: Stream<Item = Result<Bytes, E>> + Unpin,
-    E: std::error::Error + Send + Sync + 'static,
-{
-    let mut bytes = BytesMut::with_capacity(stream.size_hint().0);
-    while let Some(chunk) = stream.next().await {
-        bytes.extend_from_slice(&chunk?);
-    }
-    Ok(bytes.freeze())
+// Use read_stream from entangler module instead
+use recall_entangler::read_stream;
+
+// Helper function to create a byte stream from bytes
+fn create_byte_stream(bytes: Bytes) -> ByteStream {
+    Box::pin(futures::stream::once(async move {
+        Ok::<Bytes, StorageError>(bytes)
+    }))
 }
 
 async fn load_metadata(hash: &str, storage: &impl Storage) -> Result<Metadata> {
@@ -93,7 +94,9 @@ async fn test_upload_bytes_to_iroh() -> Result<()> {
     let ent = new_entangler_from_node(&node)?;
 
     let bytes = create_bytes(NUM_CHUNKS);
-    let result = ent.upload(bytes.clone()).await?;
+    // Convert bytes to a stream for upload
+    let byte_stream = create_byte_stream(bytes.clone());
+    let result = ent.upload(byte_stream).await?;
 
     let data_hash = iroh::blobs::Hash::from_str(&result.orig_hash)?;
     let res = node.blobs().read_to_bytes(data_hash).await?;
@@ -153,7 +156,9 @@ async fn test_download_bytes_from_iroh() -> Result<()> {
     let ent = new_entangler_from_node(&node)?;
 
     let bytes = create_bytes(NUM_CHUNKS);
-    let result = ent.upload(bytes.clone()).await?;
+    // Convert bytes to a stream for upload
+    let byte_stream = create_byte_stream(bytes.clone());
+    let result = ent.upload(byte_stream).await?;
 
     let stream = ent.download(&result.orig_hash, None).await?;
     let downloaded_bytes = read_stream(stream).await?;
@@ -167,7 +172,8 @@ async fn if_blob_is_missing_and_no_provided_metadata_error() -> Result<()> {
     let ent = new_entangler_from_node(&node)?;
 
     let bytes = create_bytes(NUM_CHUNKS);
-    let result = ent.upload(bytes.clone()).await?;
+    let byte_stream = create_byte_stream(bytes.clone());
+    let result = ent.upload(byte_stream).await?;
 
     let node_with_metadata = iroh::node::Node::memory().spawn().await?;
     load_parity_data_to_node(&node_with_metadata, &node, &result.metadata_hash).await?;
@@ -185,7 +191,8 @@ async fn if_blob_is_missing_and_metadata_is_provided_error() -> Result<()> {
     let ent = new_entangler_from_node(&node)?;
 
     let bytes = create_bytes(NUM_CHUNKS);
-    let result = ent.upload(bytes.clone()).await?;
+    let byte_stream = create_byte_stream(bytes.clone());
+    let result = ent.upload(byte_stream).await?;
 
     let node_with_metadata = iroh::node::Node::memory().spawn().await?;
     load_parity_data_to_node(&node_with_metadata, &node, &result.metadata_hash).await?;
@@ -208,7 +215,8 @@ async fn if_chunk_is_missing_and_metadata_is_provided_should_repair() -> Result<
     )?;
 
     let bytes = create_bytes(NUM_CHUNKS);
-    let result = ent.upload(bytes.clone()).await?;
+    let byte_stream = create_byte_stream(bytes.clone());
+    let result = ent.upload(byte_stream).await?;
 
     mock_storage.fake_failed_download(&result.orig_hash);
     mock_storage.fake_failed_chunks(&result.orig_hash, vec![2]);
@@ -231,7 +239,8 @@ async fn if_stream_fails_and_metadata_is_not_provided_should_error() -> Result<(
     )?;
 
     let bytes = create_bytes(2); // Creates 2048 bytes (2 chunks)
-    let result = ent.upload(bytes.clone()).await?;
+    let byte_stream = create_byte_stream(bytes.clone());
+    let result = ent.upload(byte_stream).await?;
 
     // this simulates a failure during stream download after 1034 bytes
     mock_storage.fake_failed_stream(&result.orig_hash, (CHUNK_SIZE + 10) as usize);
@@ -315,7 +324,8 @@ async fn if_stream_fails_should_repair_and_continue_where_left_off() -> Result<(
         )?;
 
         let bytes = create_bytes(case.num_chunks);
-        let result = ent.upload(bytes.clone()).await?;
+        let byte_stream = create_byte_stream(bytes.clone());
+        let result = ent.upload(byte_stream).await?;
 
         // this simulates a failure during stream download
         mock_storage.fake_failed_stream(&result.orig_hash, case.fail_at);
@@ -662,7 +672,8 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
                 let upload_result = mock_storage.upload_bytes(bytes.clone()).await?;
                 ent.entangle_uploaded(upload_result.hash.clone()).await?
             } else {
-                ent.upload(bytes.clone()).await?
+                let byte_stream = create_byte_stream(bytes.clone());
+                ent.upload(byte_stream).await?
             };
 
             let metadata = load_metadata(&result.metadata_hash, &mock_storage).await?;
@@ -834,8 +845,8 @@ async fn test_download_chunks_range_and_repair_scenarios() -> Result<()> {
                 )?;
 
                 let bytes = create_bytes(NUM_CHUNKS);
-
-                let result = ent.upload(bytes.clone()).await?;
+                let byte_stream = create_byte_stream(bytes.clone());
+                let result = ent.upload(byte_stream).await?;
                 let metadata = load_metadata(&result.metadata_hash, &mock_storage).await?;
 
                 mock_storage.fake_failed_download(&metadata.orig_hash);
@@ -992,10 +1003,7 @@ async fn if_download_fails_it_should_upload_to_storage_after_repair() -> Result<
         storage.fake_failed_chunks(&upload_result.hash, vec![1]);
 
         let res = storage.download_bytes(&upload_result.hash).await;
-        assert!(matches!(
-            res,
-            Err(recall_entangler_storage::Error::BlobNotFound(_))
-        ));
+        assert!(matches!(res, Err(StorageError::BlobNotFound(_))));
 
         match t.method {
             Method::Download => {
@@ -1099,7 +1107,8 @@ async fn test_upload_and_download_small_file() -> Result<()> {
             let storage = FakeStorage::new();
             let ent = Entangler::new(storage.clone(), Config::new(3, 5, 5))?;
 
-            let result = ent.upload(case.data.clone()).await?;
+            let byte_stream = create_byte_stream(case.data.clone());
+            let result = ent.upload(byte_stream).await?;
 
             let stream = storage.download_bytes(&result.orig_hash).await?;
             let download_result = read_stream(stream).await;
@@ -1135,7 +1144,8 @@ async fn test_upload_and_repair_small_file() -> Result<()> {
     let ent = Entangler::new(storage.clone(), Config::new(3, 5, 5))?;
 
     let bytes = Bytes::from_static(b"small chunk");
-    let result = ent.upload(bytes.clone()).await?;
+    let byte_stream = create_byte_stream(bytes.clone());
+    let result = ent.upload(byte_stream).await?;
 
     storage.fake_failed_download(&result.orig_hash);
     storage.fake_failed_chunks(&result.orig_hash, vec![0]);
@@ -1168,7 +1178,8 @@ async fn test_metadata_fields() -> Result<()> {
     for method in ["upload", "entangle_uploaded"] {
         println!("Running test case: {}", method);
         let result = if method == "upload" {
-            ent.upload(bytes.clone()).await?
+            let byte_stream = create_byte_stream(bytes.clone());
+            ent.upload(byte_stream).await?
         } else {
             let upload_result = storage.upload_bytes(bytes.clone()).await?;
             ent.entangle_uploaded(upload_result.hash.clone()).await?
