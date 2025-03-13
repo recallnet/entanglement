@@ -149,7 +149,7 @@ impl<T: Storage> Entangler<T> {
     /// and all upload results from the underlying storage.
     pub async fn upload<S, E>(&self, stream: S) -> Result<EntanglementResult>
     where
-        S: Stream<Item = Result<Bytes, E>> + Send + Unpin,
+        S: Stream<Item = Result<Bytes, E>> + Send + Unpin + 'static,
         E: std::error::Error + Send + Sync + 'static,
     {
         let mut upload_results = Vec::new();

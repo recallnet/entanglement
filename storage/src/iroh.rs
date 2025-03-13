@@ -171,27 +171,15 @@ impl Storage for IrohStorage {
 
     async fn upload_bytes<S, E>(&self, stream: S) -> Result<storage::UploadResult, StorageError>
     where
-        S: Stream<Item = Result<Bytes, E>> + Send + Unpin,
+        S: Stream<Item = Result<Bytes, E>> + Send + Unpin + 'static,
         E: std::error::Error + Send + Sync + 'static,
     {
-        // We need to collect bytes first for size calculation
-        // and convert the stream to the format expected by iroh
         use futures::TryStreamExt;
 
-        // First collect the stream to get the total size
-        let mut buffer = Vec::new();
-        let mut stream =
-            stream.map_err(|e| StorageError::StorageError(storage::wrap_error(e.into())));
-        while let Some(bytes) = futures::TryStreamExt::try_next(&mut stream).await? {
-            buffer.extend_from_slice(&bytes);
-        }
-
-        let bytes = Bytes::from(buffer);
-        let size = bytes.len();
-
-        // Create a stream from the collected bytes with the chunk size expected by Iroh
-        // The chunked_bytes_stream function splits the bytes in the appropriate size
-        let iroh_stream = chunked_bytes_stream(bytes, 1024 * 64).map(Ok);
+        // Convert the error type of the stream to match what iroh expects
+        let iroh_stream = stream
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+            .map_ok(|bytes| bytes);
 
         let tag = format!("ent-{}", Uuid::new_v4());
 
@@ -216,7 +204,7 @@ impl Storage for IrohStorage {
         Ok(storage::UploadResult {
             hash: blob.hash.to_string(),
             info,
-            size: size as u64,
+            size: blob.size,
         })
     }
 
@@ -314,12 +302,6 @@ impl Storage for IrohStorage {
             num_chunks: reader.size().div_ceil(CHUNK_SIZE),
         })
     }
-}
-
-fn chunked_bytes_stream(mut b: Bytes, c: usize) -> impl Stream<Item = Bytes> {
-    futures_lite::stream::iter(std::iter::from_fn(move || {
-        Some(b.split_to(b.len().min(c))).filter(|x| !x.is_empty())
-    }))
 }
 
 #[cfg(test)]
