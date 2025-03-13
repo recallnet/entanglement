@@ -421,34 +421,31 @@ impl<T: Storage> Entangler<T> {
                 all_chunks.extend(repaired_chunks);
 
                 let num_chunks = metadata.num_bytes.div_ceil(metadata.chunk_size);
-                let mut data = BytesMut::with_capacity((num_chunks * CHUNK_SIZE) as usize);
-                for index in 0..num_chunks {
-                    let chunk_id = mapper.index_to_id(index)?;
-                    if let Some(chunk) = all_chunks.get(&chunk_id) {
-                        data.extend_from_slice(chunk);
-                    } else {
-                        return Err(Error::Other(anyhow::anyhow!("Missing chunk after repair")));
+
+                // Create a stream from the chunks directly
+                let chunk_stream = futures::stream::iter((0..num_chunks).map(move |index| {
+                    match mapper.index_to_id(index) {
+                        Ok(chunk_id) => match all_chunks.get(&chunk_id) {
+                            Some(chunk) => Ok(chunk.clone()),
+                            None => {
+                                Err(Error::Other(anyhow::anyhow!("Missing chunk after repair")))
+                            }
+                        },
+                        Err(e) => Err(Error::from(e)),
                     }
+                }));
+
+                let upload_stream = chunk_stream.map(|result| {
+                    result
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                });
+
+                self.storage.upload_bytes(upload_stream).await?;
+
+                match self.storage.download_bytes(hash).await {
+                    Ok(stream) => Ok(Box::pin(stream.map_err(Error::from))),
+                    Err(e) => Err(Error::from(e)),
                 }
-
-                let owned_data = data.freeze();
-
-                // Clone the data for the stream
-                let upload_data = owned_data.clone();
-
-                // Create a stream from the owned data
-                let owned_data_stream = Box::pin(futures::stream::once(async move {
-                    Ok::<Bytes, std::io::Error>(upload_data)
-                }));
-                self.storage.upload_bytes(owned_data_stream).await?;
-
-                let stream = futures::stream::iter((0..num_chunks).map(move |i| {
-                    let start = i as usize * CHUNK_SIZE as usize;
-                    let end = (start + CHUNK_SIZE as usize).min(owned_data.len());
-                    Ok(owned_data.slice(start..end))
-                }));
-
-                Ok(Box::pin(stream))
             }
             Err(e) => Err(Error::from(e)),
         }
@@ -600,13 +597,18 @@ mod tests {
     async fn test_if_download_fails_it_should_upload_to_storage_after_repair() {
         let hash = "hash".to_string();
         let m_hash = "metadata_hash".to_string();
-        let chunks = vec!["chunk0", "chunk1", "chunk2"];
+        let chunks = ["chunk0", "chunk1", "chunk2"];
+        let repaired_data = Bytes::from(chunks.join(""));
 
         let mut storage = SpyStorage::default();
+        // First download attempt fails
         storage.stub_download_bytes(
             Some(hash.clone()),
             Err(StorageError::BlobNotFound(hash.clone())),
         );
+        // Second download attempt (after repair) succeeds
+        storage.stub_download_bytes(Some(hash.clone()), Ok(repaired_data.clone()));
+
         storage.stub_iter_chunks(
             chunks
                 .iter()
@@ -638,10 +640,6 @@ mod tests {
             "Expected 1 call to upload_bytes, got {:?}",
             calls.len()
         );
-        assert_eq!(
-            calls[0],
-            Bytes::from(chunks.into_iter().collect::<String>()),
-            "Unexpected data uploaded"
-        );
+        assert_eq!(calls[0], repaired_data, "Unexpected data uploaded");
     }
 }

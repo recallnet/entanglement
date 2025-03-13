@@ -369,7 +369,8 @@ impl Storage for DummyStorage {
 #[derive(Clone)]
 pub struct StubStorage {
     upload_bytes_result: Result<UploadResult, StorageError>,
-    download_bytes_result: HashMap<Option<String>, Result<Bytes, StorageError>>,
+    download_bytes_results: HashMap<Option<String>, Vec<Result<Bytes, StorageError>>>,
+    download_bytes_call_count: Arc<Mutex<HashMap<Option<String>, usize>>>,
     iter_chunks_result: Vec<(u64, Result<Bytes, StorageError>)>,
     download_chunk_result: HashMap<Option<(String, u64)>, Result<Bytes, StorageError>>,
     chunk_id_mapper_result: Result<DummyChunkIdMapper, StorageError>,
@@ -386,7 +387,8 @@ impl Default for StubStorage {
                 info,
                 size: 0,
             }),
-            download_bytes_result: HashMap::new(),
+            download_bytes_results: HashMap::new(),
+            download_bytes_call_count: Arc::new(Mutex::new(HashMap::new())),
             iter_chunks_result: vec![(0, Ok(Bytes::from("dummy data")))],
             download_chunk_result: HashMap::new(),
             chunk_id_mapper_result: Ok(DummyChunkIdMapper {}),
@@ -399,12 +401,22 @@ impl StubStorage {
         self.upload_bytes_result = result;
     }
 
+    /// Stub a response for download_bytes method
+    ///
+    /// # Arguments
+    ///
+    /// * `hash` - The hash to match for this stub
+    /// * `result` - The result to return for this stub
+    ///
+    /// Multiple stubs for the same hash will be returned in the order they were added.
+    /// If you call download_bytes more times than stubs are provided, the last stub will be repeated.
     pub fn stub_download_bytes(
         &mut self,
         hash: Option<String>,
         result: Result<Bytes, StorageError>,
     ) {
-        self.download_bytes_result.insert(hash, result);
+        let results = self.download_bytes_results.entry(hash).or_default();
+        results.push(result);
     }
 
     pub fn stub_iter_chunks(&mut self, chunks: Vec<(u64, Result<Bytes, StorageError>)>) {
@@ -438,14 +450,30 @@ impl Storage for StubStorage {
     }
 
     async fn download_bytes(&self, hash: &str) -> Result<ByteStream, StorageError> {
-        let result = self
-            .download_bytes_result
-            .get(&Some(hash.to_string()))
-            .or_else(|| self.download_bytes_result.get(&None))
-            .cloned()
-            .unwrap_or_else(|| Ok(Bytes::from("dummy data")))?;
+        let key = Some(hash.to_string());
+        let mut call_counts = self.download_bytes_call_count.lock().unwrap();
+        let count = *call_counts.entry(key.clone()).or_insert(0);
+        call_counts.insert(key.clone(), count + 1);
 
-        Ok(Box::pin(futures::stream::once(ready(Ok(result)))))
+        let results = self
+            .download_bytes_results
+            .get(&key)
+            .or_else(|| self.download_bytes_results.get(&None));
+
+        if let Some(results) = results {
+            let idx = if count < results.len() {
+                count
+            } else {
+                results.len() - 1
+            };
+            let result = results[idx].clone()?;
+            Ok(Box::pin(futures::stream::once(ready(Ok(result)))))
+        } else {
+            // Default fallback if no stub provided
+            Ok(Box::pin(futures::stream::once(ready(Ok(Bytes::from(
+                "dummy data",
+            ))))))
+        }
     }
 
     async fn iter_chunks(&self, _: &str) -> Result<ChunkStream<Self::ChunkId>, StorageError> {
