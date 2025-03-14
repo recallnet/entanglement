@@ -3709,7 +3709,24 @@ dependencies = [
 ]
 
 [[package]]
-name = "recall_entanglement_cli"
+name = "recall_entangler"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "cid",
+ "futures",
+ "iroh",
+ "recall_entangler_storage",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.11",
+ "tokio",
+]
+
+[[package]]
+name = "recall_entangler_cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -3718,8 +3735,8 @@ dependencies = [
  "clap",
  "clap-stdin",
  "futures",
- "recall_entanglement_storage",
  "recall_entangler",
+ "recall_entangler_storage",
  "serde",
  "serde_json",
  "stderrlog",
@@ -3728,7 +3745,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "recall_entanglement_storage"
+name = "recall_entangler_storage"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -3745,23 +3762,6 @@ dependencies = [
  "thiserror 2.0.11",
  "tokio",
  "uuid",
-]
-
-[[package]]
-name = "recall_entangler"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "bytes",
- "cid",
- "futures",
- "iroh",
- "recall_entanglement_storage",
- "serde",
- "serde_json",
- "thiserror 2.0.11",
- "tokio",
 ]
 
 [[package]]

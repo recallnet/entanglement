@@ -1,5 +1,5 @@
 [package]
-name = "recall_entanglement_storage"
+name = "recall_entangler_storage"
 description = "Distributed storage for uploading and downloading data."
 authors.workspace = true
 edition.workspace = true

@@ -5,7 +5,7 @@ use crate::grid::{Dir, Pos, Positioner};
 use crate::lattice::{Graph, NodeId, NodeType};
 use crate::parity::StrandType;
 use anyhow::Result;
-use recall_entanglement_storage::{ChunkIdMapper, Error as StorageError, Storage};
+use recall_entangler_storage::{ChunkIdMapper, Error as StorageError, Storage};
 
 use crate::Metadata;
 use bytes::Bytes;
