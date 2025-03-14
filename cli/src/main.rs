@@ -12,8 +12,8 @@ use futures::StreamExt;
 use std::str::FromStr;
 use stderrlog::Timestamp;
 
-use recall_entanglement_storage::iroh::IrohStorage;
 use recall_entangler::{ByteStream, Config, Entangler};
+use recall_entangler_storage::iroh::IrohStorage;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]

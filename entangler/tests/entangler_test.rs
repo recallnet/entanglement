@@ -4,8 +4,8 @@
 use anyhow::Result;
 use bytes::{BufMut, Bytes, BytesMut};
 use futures::{Stream, StreamExt};
-use recall_entanglement_storage::{self, mock::FakeStorage, ChunkIdMapper, Storage};
 use recall_entangler::{self, parity::StrandType, ChunkRange, Config, Entangler, Metadata};
+use recall_entangler_storage::{self, mock::FakeStorage, ChunkIdMapper, Storage};
 use std::collections::HashSet;
 use std::str::FromStr;
 
@@ -38,8 +38,8 @@ fn xor_chunks(chunk1: &[u8], chunk2: &[u8]) -> Bytes {
 
 fn new_entangler_from_node<S: iroh::blobs::store::Store>(
     node: &iroh::node::Node<S>,
-) -> Result<Entangler<recall_entanglement_storage::iroh::IrohStorage>, recall_entangler::Error> {
-    let st = recall_entanglement_storage::iroh::IrohStorage::from_client(node.client().clone());
+) -> Result<Entangler<recall_entangler_storage::iroh::IrohStorage>, recall_entangler::Error> {
+    let st = recall_entangler_storage::iroh::IrohStorage::from_client(node.client().clone());
     Entangler::new(st, Config::new(3, HEIGHT as u8, HEIGHT as u8))
 }
 
@@ -994,7 +994,7 @@ async fn if_download_fails_it_should_upload_to_storage_after_repair() -> Result<
         let res = storage.download_bytes(&upload_result.hash).await;
         assert!(matches!(
             res,
-            Err(recall_entanglement_storage::Error::BlobNotFound(_))
+            Err(recall_entangler_storage::Error::BlobNotFound(_))
         ));
 
         match t.method {

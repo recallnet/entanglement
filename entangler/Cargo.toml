@@ -22,10 +22,10 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 
-recall_entanglement_storage = { version = "0.1.0", path = "../storage", features = [] }
+recall_entangler_storage = { version = "0.1.0", path = "../storage", features = [] }
 
 [dev-dependencies]
-recall_entanglement_storage = { path = "../storage", features = ["mock"] }
+recall_entangler_storage = { path = "../storage", features = ["mock"] }
 
 [lib]
 doctest = false
