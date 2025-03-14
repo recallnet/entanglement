@@ -31,7 +31,11 @@
 //! ### Example
 //!
 //! ```rust
-//! use crate::storage::{Storage, iroh::IrohStorage};
+//! pub mod storage;
+//! pub mod iroh;
+//!
+//! use crate::storage::Storage;
+//! use crate::iroh::IrohStorage;
 //! use bytes::Bytes;
 //! use futures::StreamExt;
 //!

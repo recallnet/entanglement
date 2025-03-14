@@ -3,7 +3,7 @@
 
 use crate::entangler::{ByteStream, Entangler, Error};
 use bytes::Bytes;
-use storage::{self, Error as StorageError, Storage};
+use recall_entanglement_storage::{self, Error as StorageError, Storage};
 
 use futures::{future::Future, ready, task::Poll, Stream, StreamExt, TryStreamExt};
 use std::pin::Pin;
@@ -19,7 +19,7 @@ type ByteStreamFuture = Pin<Box<dyn Future<Output = Result<ByteStream, Error>> +
 ///
 /// This stream ensures data integrity by automatically repairing corrupted chunks during streaming.
 pub struct RepairingStream<T: Storage + 'static> {
-    inner: storage::ByteStream,
+    inner: recall_entanglement_storage::ByteStream,
     entangler: Entangler<T>,
     hash: String,
     metadata_hash: String,
@@ -43,7 +43,7 @@ impl<T: Storage + 'static> RepairingStream<T> {
         entangler: Entangler<T>,
         hash: String,
         metadata_hash: String,
-        inner: storage::ByteStream,
+        inner: recall_entanglement_storage::ByteStream,
     ) -> Self {
         Self {
             entangler,
@@ -115,17 +115,18 @@ impl<T: Storage + 'static> RepairingStream<T> {
                         match ff_future.as_mut().poll(cx) {
                             Poll::Ready(Ok(fast_forwarded_stream)) => {
                                 self.inner = Box::pin(fast_forwarded_stream.map_err(|e| {
-                                    StorageError::Other(storage::wrap_error(e.into()))
+                                    StorageError::Other(recall_entanglement_storage::wrap_error(
+                                        e.into(),
+                                    ))
                                 }));
                             }
                             Poll::Ready(Err(e)) => return Err(e),
                             Poll::Pending => return Ok(()),
                         }
                     } else {
-                        self.inner = Box::pin(
-                            new_stream
-                                .map_err(|e| StorageError::Other(storage::wrap_error(e.into()))),
-                        );
+                        self.inner = Box::pin(new_stream.map_err(|e| {
+                            StorageError::Other(recall_entanglement_storage::wrap_error(e.into()))
+                        }));
                     }
                     Ok(())
                 }

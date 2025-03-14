@@ -1,5 +1,5 @@
 [package]
-name = "entanglement_cli"
+name = "recall_entanglement_cli"
 description = "A command line interface (CLI) for the Aplha Entanglement."
 authors.workspace = true
 edition.workspace = true
@@ -27,5 +27,5 @@ stderrlog = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 
-entangler = { path = "../entangler" }
-storage = { path = "../storage" }
+recall_entangler = { path = "../entangler", version = "0.1.0" }
+recall_entanglement_storage = { path = "../storage", version = "0.1.0" }
