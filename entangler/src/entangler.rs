@@ -180,11 +180,6 @@ impl<T: Storage> Entangler<T> {
     /// The original data is also uploaded to the storage backend.
     /// Returns the hash of the metadata and the upload results for parity blobs and metadata.
     async fn entangle(&self, bytes: Bytes, hash: String) -> Result<(String, Vec<UploadResult>)> {
-    async fn entangle(
-        &self,
-        bytes: Bytes,
-        hash: String,
-    ) -> Result<(String, Vec<UploadResult>)> {
         let num_bytes = bytes.len();
 
         let chunks = bytes_to_chunks(bytes, CHUNK_SIZE);

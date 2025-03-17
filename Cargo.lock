@@ -3742,6 +3742,7 @@ dependencies = [
  "stderrlog",
  "thiserror 2.0.11",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

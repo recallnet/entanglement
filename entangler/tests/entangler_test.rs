@@ -77,12 +77,12 @@ async fn load_parity_data_to_node<S>(
 use recall_entangler::read_stream;
 
 // Helper function to convert bytes to a stream for tests
-fn bytes_to_stream<T>(bytes: T) -> storage::ByteStream
+fn bytes_to_stream<T>(bytes: T) -> ByteStream
 where
     T: Into<Bytes> + Send + 'static,
 {
     Box::pin(futures::stream::once(async move {
-        Ok::<Bytes, storage::Error>(bytes.into())
+        Ok::<Bytes, StorageError>(bytes.into())
     }))
 }
 
