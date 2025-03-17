@@ -1943,9 +1943,9 @@ dependencies = [
 
 [[package]]
 name = "iroh-blobs"
-version = "0.33.0"
+version = "0.33.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96cb8430c257cd42b2da9f94bc7e72912b182e760ab5c7fdbecd250d51de5e44"
+checksum = "1c6e67ab7aaa173e2631ad60112a64419d3bd7dd62de42d295e435d731334ac2"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -2741,7 +2741,7 @@ version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af1844ef2428cc3e1cb900be36181049ef3d3193c63e43026cfe202983b27a56"
 dependencies = [
- "proc-macro-crate 3.2.0",
+ "proc-macro-crate 1.1.3",
  "proc-macro2",
  "quote",
  "syn 2.0.96",
@@ -3304,9 +3304,9 @@ dependencies = [
 
 [[package]]
 name = "quic-rpc"
-version = "0.18.2"
+version = "0.18.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d1ac46017d97c2ee3a7013c256a8ed00748b685ad8235f52245eb894706959c5"
+checksum = "ee5ffa5a7459678fb545b3666e1f9a08b01b6e6af56bf29cd54d07f29b97aaf2"
 dependencies = [
  "anyhow",
  "document-features",
