@@ -19,17 +19,6 @@ use crate::storage::{
     self, ByteStream, ChunkId, ChunkIdMapper, ChunkStream, Error as StorageError, Storage,
 };
 
-// Helper function to convert bytes to a stream for tests
-#[cfg(test)]
-fn bytes_to_stream<T>(bytes: T) -> impl Stream<Item = Result<Bytes, StorageError>> + Send + Unpin
-where
-    T: Into<Bytes> + Send,
-{
-    Box::pin(futures::stream::once(async move {
-        Ok::<Bytes, StorageError>(bytes.into())
-    }))
-}
-
 const CHUNK_SIZE: u64 = 1024;
 
 /// `ClientProvider` is a trait for types that can provide an Iroh client.
@@ -310,6 +299,18 @@ mod tests {
     use bytes::Bytes;
     use futures::StreamExt;
     use tokio;
+
+    #[cfg(test)]
+    fn bytes_to_stream<T>(
+        bytes: T,
+    ) -> impl Stream<Item = Result<Bytes, StorageError>> + Send + Unpin
+    where
+        T: Into<Bytes> + Send,
+    {
+        Box::pin(futures::stream::once(async move {
+            Ok::<Bytes, StorageError>(bytes.into())
+        }))
+    }
 
     async fn collect_chunks(storage: &IrohStorage, hash: &str) -> Result<Vec<Bytes>> {
         let stream = storage.iter_chunks(hash).await?;
