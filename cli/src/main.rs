@@ -9,7 +9,7 @@ use std::net::SocketAddr;
 
 use bytes::Bytes;
 use clap::{Args, Parser, Subcommand};
-use futures::{stream, StreamExt};
+use futures::StreamExt;
 use std::str::FromStr;
 use stderrlog::Timestamp;
 
@@ -124,12 +124,25 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Upload(args) => {
-            let bytes = tokio::fs::read(args.file.clone()).await?;
-            // Convert bytes to a Stream
-            let bytes_stream = Box::pin(stream::once(async move {
-                Ok::<Bytes, std::io::Error>(Bytes::from(bytes))
-            }));
-            let result = entangler.upload(bytes_stream).await?;
+            use futures::TryStreamExt;
+            use tokio::fs::File;
+            use tokio::io::{self};
+            use tokio_util::io::ReaderStream;
+
+            // Open the file
+            let file = File::open(&args.file)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to open file {}: {}", args.file, e))?;
+
+            // Create a stream directly from the file with optimal buffer size
+            // ReaderStream implements Stream and automatically manages buffering
+            const CHUNK_SIZE: usize = 1024 * 64; // 64KB chunks for optimal performance
+            let file_stream = ReaderStream::with_capacity(file, CHUNK_SIZE);
+
+            // Map the stream to convert io::Error to the format expected by entangler
+            // and convert the bytes to the Bytes type
+            let file_stream = file_stream.map_err(|e| e as io::Error).map_ok(Bytes::from);
+            let result = entangler.upload(file_stream).await?;
             println!(
                 "uploaded file. Hash: {}, Meta: {}",
                 result.orig_hash, result.metadata_hash
