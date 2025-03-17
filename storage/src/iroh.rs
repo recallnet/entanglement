@@ -165,7 +165,6 @@ impl Storage for IrohStorage {
     {
         use futures::TryStreamExt;
 
-        // Convert the error type of the stream to match what iroh expects
         let iroh_stream = stream
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
             .map_ok(|bytes| bytes);

@@ -126,7 +126,6 @@ impl Storage for FakeStorage {
         S: Stream<Item = Result<Bytes, E>> + Send + Unpin,
         E: std::error::Error + Send + Sync + 'static,
     {
-        // Collect all the bytes from the stream
         use futures::TryStreamExt;
         let mut all_bytes = Vec::new();
         let mut stream = stream.map_err(|e| StorageError::Other(e.to_string()));

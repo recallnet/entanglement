@@ -129,7 +129,6 @@ async fn main() -> anyhow::Result<()> {
             use tokio::io::{self};
             use tokio_util::io::ReaderStream;
 
-            // Open the file
             let file = File::open(&args.file)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to open file {}: {}", args.file, e))?;
