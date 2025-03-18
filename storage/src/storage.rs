@@ -88,13 +88,16 @@ pub trait Storage: Send + Sync + Clone {
     ///
     /// # Arguments
     ///
-    /// * `bytes` - The bytes to upload.
+    /// * `stream` - A stream of bytes to upload.
     ///
     /// # Returns
     ///
     /// A `Result` containing the upload result with hash of the uploaded data and additional info,
     /// or an error if the upload fails.
-    async fn upload_bytes(&self, bytes: impl Into<Bytes> + Send) -> Result<UploadResult, Error>;
+    async fn upload_bytes<S, E>(&self, stream: S) -> Result<UploadResult, Error>
+    where
+        S: Stream<Item = Result<Bytes, E>> + Send + Unpin + 'static,
+        E: std::error::Error + Send + Sync + 'static;
 
     /// Downloads the bytes identified by the given hash as a stream of bytes.
     ///

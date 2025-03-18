@@ -37,13 +37,18 @@
 //! use crate::storage::Storage;
 //! use crate::iroh::IrohStorage;
 //! use bytes::Bytes;
-//! use futures::StreamExt;
+//! use futures::{StreamExt, Stream};
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
 //!     let storage = IrohStorage::new_in_memory().await?;
 //!     let data = b"Hello, world!".to_vec();
-//!     let upload_result = storage.upload_bytes(data.clone()).await?;
+//!     let data_clone = data.clone();
+//!     // Create a stream from the data
+//!     let data_stream = Box::pin(futures::stream::once(async move {
+//!         Ok::<Bytes, std::io::Error>(Bytes::from(data_clone))
+//!     }));
+//!     let upload_result = storage.upload_bytes(data_stream).await?;
 //!
 //!     // Download the data as a single blob
 //!     let mut stream = storage.download_bytes(&upload_result.hash).await?;

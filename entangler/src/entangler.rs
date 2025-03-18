@@ -5,7 +5,7 @@ use anyhow::Result;
 use bytes::{Bytes, BytesMut};
 use futures::TryStreamExt;
 use futures::{Stream, StreamExt};
-use recall_entangler_storage::{self, ChunkIdMapper, Error as StorageError, Storage};
+use recall_entangler_storage::{self, ChunkIdMapper, Error as StorageError, Storage, UploadResult};
 use std::collections::HashMap;
 use std::pin::Pin;
 
@@ -66,7 +66,7 @@ pub struct EntanglementResult {
     /// The hash of the metadata blob.
     pub metadata_hash: String,
     /// Results from all storage uploads (original blob in case of `upload`, parity blobs, and metadata blob).
-    pub upload_results: Vec<recall_entangler_storage::UploadResult>,
+    pub upload_results: Vec<UploadResult>,
 }
 
 /// The `Entangler` struct is responsible for managing the entanglement process of data chunks.
@@ -141,18 +141,28 @@ impl<T: Storage> Entangler<T> {
     ///
     /// # Arguments
     ///
-    /// * `bytes` - The data to upload.
+    /// * `stream` - The data stream to upload.
     ///
     /// # Returns
     ///
     /// An `EntanglementResult` containing the hash of the original data, the hash of the metadata,
     /// and all upload results from the underlying storage.
-    pub async fn upload(&self, bytes: impl Into<Bytes> + Send) -> Result<EntanglementResult> {
-        let bytes: Bytes = bytes.into();
+    pub async fn upload<S, E>(&self, stream: S) -> Result<EntanglementResult>
+    where
+        S: Stream<Item = Result<Bytes, E>> + Send + Unpin + 'static,
+        E: std::error::Error + Send + Sync + 'static,
+    {
         let mut upload_results = Vec::new();
 
-        let orig_upload_result = self.storage.upload_bytes(bytes.clone()).await?;
+        let orig_upload_result = self.storage.upload_bytes(stream).await?;
         upload_results.push(orig_upload_result.clone());
+
+        // Download the data we just uploaded to process it for parity generation
+        let downloaded_stream = self
+            .storage
+            .download_bytes(&orig_upload_result.hash)
+            .await?;
+        let bytes = read_stream(downloaded_stream).await?;
 
         let (metadata_hash, parity_results) = self
             .entangle(bytes, orig_upload_result.hash.clone())
@@ -169,11 +179,7 @@ impl<T: Storage> Entangler<T> {
     /// Creates entangled parity blobs for the given data and uploads them to the storage backend.
     /// The original data is also uploaded to the storage backend.
     /// Returns the hash of the metadata and the upload results for parity blobs and metadata.
-    async fn entangle(
-        &self,
-        bytes: Bytes,
-        hash: String,
-    ) -> Result<(String, Vec<recall_entangler_storage::UploadResult>)> {
+    async fn entangle(&self, bytes: Bytes, hash: String) -> Result<(String, Vec<UploadResult>)> {
         let num_bytes = bytes.len();
 
         let chunks = bytes_to_chunks(bytes, CHUNK_SIZE);
@@ -188,7 +194,7 @@ impl<T: Storage> Entangler<T> {
 
         for parity_grid in exec.iter_parities(orig_grid) {
             let data = parity_grid.grid.assemble_data();
-            let upload_result = self.storage.upload_bytes(data).await?;
+            let upload_result = self.storage.upload_bytes(bytes_to_stream(data)).await?;
             parity_hashes.insert(parity_grid.strand_type, upload_result.hash.clone());
             upload_results.push(upload_result);
         }
@@ -203,7 +209,8 @@ impl<T: Storage> Entangler<T> {
         };
 
         let metadata = serde_json::to_string(&metadata).unwrap();
-        let metadata_result = self.storage.upload_bytes(metadata).await?;
+        let metadata_stream = bytes_to_stream(Bytes::from(metadata));
+        let metadata_result = self.storage.upload_bytes(metadata_stream).await?;
         upload_results.push(metadata_result.clone());
 
         Ok((metadata_result.hash, upload_results))
@@ -223,9 +230,8 @@ impl<T: Storage> Entangler<T> {
     /// and all upload results (parity blobs and metadata blob).
     pub async fn entangle_uploaded(&self, hash: String) -> Result<EntanglementResult> {
         let orig_data_stream = self.storage.download_bytes(&hash).await?;
-        let (metadata_hash, upload_results) = self
-            .entangle(read_stream(orig_data_stream).await?, hash.clone())
-            .await?;
+        let bytes = read_stream(orig_data_stream).await?;
+        let (metadata_hash, upload_results) = self.entangle(bytes, hash.clone()).await?;
 
         Ok(EntanglementResult {
             orig_hash: hash,
@@ -403,27 +409,31 @@ impl<T: Storage> Entangler<T> {
                 all_chunks.extend(repaired_chunks);
 
                 let num_chunks = metadata.num_bytes.div_ceil(metadata.chunk_size);
-                let mut data = BytesMut::with_capacity((num_chunks * CHUNK_SIZE) as usize);
-                for index in 0..num_chunks {
-                    let chunk_id = mapper.index_to_id(index)?;
-                    if let Some(chunk) = all_chunks.get(&chunk_id) {
-                        data.extend_from_slice(chunk);
-                    } else {
-                        return Err(Error::Other(anyhow::anyhow!("Missing chunk after repair")));
+
+                // Create a stream from the chunks directly
+                let chunk_stream = futures::stream::iter((0..num_chunks).map(move |index| {
+                    match mapper.index_to_id(index) {
+                        Ok(chunk_id) => match all_chunks.get(&chunk_id) {
+                            Some(chunk) => Ok(chunk.clone()),
+                            None => {
+                                Err(Error::Other(anyhow::anyhow!("Missing chunk after repair")))
+                            }
+                        },
+                        Err(e) => Err(Error::from(e)),
                     }
-                }
-
-                let owned_data = data.freeze();
-
-                self.storage.upload_bytes(owned_data.clone()).await?;
-
-                let stream = futures::stream::iter((0..num_chunks).map(move |i| {
-                    let start = i as usize * CHUNK_SIZE as usize;
-                    let end = (start + CHUNK_SIZE as usize).min(owned_data.len());
-                    Ok(owned_data.slice(start..end))
                 }));
 
-                Ok(Box::pin(stream))
+                let upload_stream = chunk_stream.map(|result| {
+                    result
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                });
+
+                self.storage.upload_bytes(upload_stream).await?;
+
+                match self.storage.download_bytes(hash).await {
+                    Ok(stream) => Ok(Box::pin(stream.map_err(Error::from))),
+                    Err(e) => Err(Error::from(e)),
+                }
             }
             Err(e) => Err(Error::from(e)),
         }
@@ -446,14 +456,31 @@ impl<T: Storage> Entangler<T> {
     }
 }
 
-async fn read_stream(
-    mut stream: recall_entangler_storage::ByteStream,
-) -> Result<Bytes, anyhow::Error> {
+/// Reads an entire stream into a Bytes object.
+///
+/// # Arguments
+///
+/// * `stream` - The stream to read from.
+///
+/// # Returns
+///
+/// A `Result` containing the bytes read from the stream.
+pub async fn read_stream<S, E>(mut stream: S) -> Result<Bytes, anyhow::Error>
+where
+    S: Stream<Item = Result<Bytes, E>> + Unpin,
+    E: std::error::Error + Send + Sync + 'static,
+{
     let mut bytes = BytesMut::with_capacity(stream.size_hint().0);
     while let Some(chunk) = stream.next().await {
         bytes.extend_from_slice(&chunk?);
     }
     Ok(bytes.freeze())
+}
+
+fn bytes_to_stream(bytes: Bytes) -> ByteStream {
+    Box::pin(futures::stream::once(
+        async move { Ok::<Bytes, Error>(bytes) },
+    ))
 }
 
 fn bytes_to_chunks(bytes: Bytes, chunk_size: u64) -> Vec<Bytes> {
@@ -564,13 +591,18 @@ mod tests {
     async fn test_if_download_fails_it_should_upload_to_storage_after_repair() {
         let hash = "hash".to_string();
         let m_hash = "metadata_hash".to_string();
-        let chunks = vec!["chunk0", "chunk1", "chunk2"];
+        let chunks = ["chunk0", "chunk1", "chunk2"];
+        let repaired_data = Bytes::from(chunks.join(""));
 
         let mut storage = SpyStorage::default();
+        // First download attempt fails
         storage.stub_download_bytes(
             Some(hash.clone()),
             Err(StorageError::BlobNotFound(hash.clone())),
         );
+        // Second download attempt (after repair) succeeds
+        storage.stub_download_bytes(Some(hash.clone()), Ok(repaired_data.clone()));
+
         storage.stub_iter_chunks(
             chunks
                 .iter()
@@ -602,10 +634,6 @@ mod tests {
             "Expected 1 call to upload_bytes, got {:?}",
             calls.len()
         );
-        assert_eq!(
-            calls[0],
-            Bytes::from(chunks.into_iter().collect::<String>()),
-            "Unexpected data uploaded"
-        );
+        assert_eq!(calls[0], repaired_data, "Unexpected data uploaded");
     }
 }

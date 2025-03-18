@@ -158,20 +158,16 @@ impl Storage for IrohStorage {
     type ChunkId = u64;
     type ChunkIdMapper = IrohChunkIdMapper;
 
-    async fn upload_bytes(
-        &self,
-        bytes: impl Into<Bytes> + Send,
-    ) -> Result<storage::UploadResult, StorageError> {
-        let bytes = bytes.into();
-        let size = bytes.len();
+    async fn upload_bytes<S, E>(&self, stream: S) -> Result<storage::UploadResult, StorageError>
+    where
+        S: Stream<Item = Result<Bytes, E>> + Send + Unpin + 'static,
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        use futures::TryStreamExt;
 
-        // This is a workaround to avoid using `add_bytes` which has a problem with large files
-        // https://discord.com/channels/1229504999910801469/1277697450353623222/1316793879776989184
-        // The issue is already fixed https://github.com/n0-computer/iroh-blobs/pull/36
-        // But because switching to a new iroh version with the given time constrain is not very
-        // feasible, we use the workaround for now.
-        // There is an issue to track it https://github.com/recallnet/entanglement/issues/27
-        let stream = chunked_bytes_stream(bytes, 1024 * 64).map(Ok);
+        let iroh_stream = stream
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+            .map_ok(|bytes| bytes);
 
         let tag = format!("ent-{}", Uuid::new_v4());
 
@@ -179,7 +175,7 @@ impl Storage for IrohStorage {
             .client()
             .blobs()
             .add_stream(
-                stream,
+                iroh_stream,
                 SetTagOption::Named(iroh::blobs::Tag::from(tag.clone())),
             )
             .await
@@ -196,7 +192,7 @@ impl Storage for IrohStorage {
         Ok(storage::UploadResult {
             hash: blob.hash.to_string(),
             info,
-            size: size as u64,
+            size: blob.size,
         })
     }
 
@@ -296,18 +292,24 @@ impl Storage for IrohStorage {
     }
 }
 
-fn chunked_bytes_stream(mut b: Bytes, c: usize) -> impl Stream<Item = Bytes> {
-    futures_lite::stream::iter(std::iter::from_fn(move || {
-        Some(b.split_to(b.len().min(c))).filter(|x| !x.is_empty())
-    }))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use bytes::Bytes;
     use futures::StreamExt;
     use tokio;
+
+    #[cfg(test)]
+    fn bytes_to_stream<T>(
+        bytes: T,
+    ) -> impl Stream<Item = Result<Bytes, StorageError>> + Send + Unpin
+    where
+        T: Into<Bytes> + Send,
+    {
+        Box::pin(futures::stream::once(async move {
+            Ok::<Bytes, StorageError>(bytes.into())
+        }))
+    }
 
     async fn collect_chunks(storage: &IrohStorage, hash: &str) -> Result<Vec<Bytes>> {
         let stream = storage.iter_chunks(hash).await?;
@@ -320,7 +322,7 @@ mod tests {
     async fn test_iter_chunks_small_blob() -> Result<()> {
         let storage = IrohStorage::new_in_memory().await?;
         let data = Bytes::from("Hello, World!");
-        let upload_result = storage.upload_bytes(data.clone()).await?;
+        let upload_result = storage.upload_bytes(bytes_to_stream(data.clone())).await?;
         let hash = upload_result.hash;
 
         let chunks = collect_chunks(&storage, &hash).await?;
@@ -334,7 +336,7 @@ mod tests {
     async fn test_iter_chunks_large_blob() -> Result<()> {
         let storage = IrohStorage::new_in_memory().await?;
         let data = Bytes::from(vec![0u8; 3000]); // 3000 bytes, should be 3 chunks
-        let upload_result = storage.upload_bytes(data.clone()).await?;
+        let upload_result = storage.upload_bytes(bytes_to_stream(data.clone())).await?;
         let hash = upload_result.hash;
 
         let chunks = collect_chunks(&storage, &hash).await?;
@@ -351,7 +353,7 @@ mod tests {
     async fn test_iter_chunks_empty_blob() -> Result<()> {
         let storage = IrohStorage::new_in_memory().await?;
         let data = Bytes::new();
-        let upload_result = storage.upload_bytes(data).await?;
+        let upload_result = storage.upload_bytes(bytes_to_stream(data)).await?;
         let hash = upload_result.hash;
 
         let chunks = collect_chunks(&storage, &hash).await?;
@@ -364,7 +366,7 @@ mod tests {
     async fn test_iter_chunks_exact_multiple() -> Result<()> {
         let storage = IrohStorage::new_in_memory().await?;
         let data = Bytes::from(vec![0u8; 2048]);
-        let upload_result = storage.upload_bytes(data.clone()).await?;
+        let upload_result = storage.upload_bytes(bytes_to_stream(data.clone())).await?;
         let hash = upload_result.hash;
 
         let chunks = collect_chunks(&storage, &hash).await?;
@@ -388,7 +390,7 @@ mod tests {
     async fn test_download_chunk_small_blob() -> Result<()> {
         let storage = IrohStorage::new_in_memory().await?;
         let data = Bytes::from("Hello, World!");
-        let upload_result = storage.upload_bytes(data.clone()).await?;
+        let upload_result = storage.upload_bytes(bytes_to_stream(data.clone())).await?;
         let hash = upload_result.hash;
 
         let chunk = storage.download_chunk(&hash, 0).await?;
@@ -400,7 +402,7 @@ mod tests {
     async fn test_download_chunk_large_blob() -> Result<()> {
         let storage = IrohStorage::new_in_memory().await?;
         let data = Bytes::from(vec![0u8; 3000]); // 3000 bytes, should be 3 chunks
-        let upload_result = storage.upload_bytes(data.clone()).await?;
+        let upload_result = storage.upload_bytes(bytes_to_stream(data.clone())).await?;
         let hash = upload_result.hash;
 
         let chunk0 = storage.download_chunk(&hash, 0).await?;
@@ -418,7 +420,7 @@ mod tests {
     async fn test_download_chunk_exact_multiple() -> Result<()> {
         let storage = IrohStorage::new_in_memory().await?;
         let data = Bytes::from(vec![0u8; 2048]);
-        let upload_result = storage.upload_bytes(data.clone()).await?;
+        let upload_result = storage.upload_bytes(bytes_to_stream(data.clone())).await?;
         let hash = upload_result.hash;
 
         let chunk0 = storage.download_chunk(&hash, 0).await?;
@@ -442,7 +444,7 @@ mod tests {
     async fn test_download_chunk_out_of_bounds() -> Result<()> {
         let storage = IrohStorage::new_in_memory().await?;
         let data = Bytes::from("Hello, World!");
-        let upload_result = storage.upload_bytes(data).await?;
+        let upload_result = storage.upload_bytes(bytes_to_stream(data)).await?;
         let hash = upload_result.hash;
 
         let result = storage.download_chunk(&hash, 1).await;
@@ -458,7 +460,7 @@ mod tests {
     async fn test_chunk_id_mapper() -> Result<()> {
         let storage = IrohStorage::new_in_memory().await?;
         let data = vec![0u8; 3000]; // 3 chunks
-        let upload_result = storage.upload_bytes(data).await?;
+        let upload_result = storage.upload_bytes(bytes_to_stream(data)).await?;
         let hash = upload_result.hash;
 
         let mapper = storage.chunk_id_mapper(&hash).await?;
@@ -497,7 +499,7 @@ mod tests {
     async fn test_upload_bytes_metadata() -> Result<()> {
         let storage = IrohStorage::new_in_memory().await?;
         let data = Bytes::from("Hello, World!");
-        let upload_result = storage.upload_bytes(data.clone()).await?;
+        let upload_result = storage.upload_bytes(bytes_to_stream(data.clone())).await?;
 
         // Verify the UploadResult contains expected fields
         assert!(!upload_result.hash.is_empty(), "Hash should not be empty");

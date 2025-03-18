@@ -3,9 +3,10 @@
 
 use crate::entangler::{ByteStream, Entangler, Error};
 use bytes::Bytes;
-use recall_entangler_storage::{self, Error as StorageError, Storage};
-
 use futures::{future::Future, ready, task::Poll, Stream, StreamExt, TryStreamExt};
+use recall_entangler_storage::{
+    self, ByteStream as StorageByteStream, Error as StorageError, Storage,
+};
 use std::pin::Pin;
 use std::task::Context;
 
@@ -19,7 +20,7 @@ type ByteStreamFuture = Pin<Box<dyn Future<Output = Result<ByteStream, Error>> +
 ///
 /// This stream ensures data integrity by automatically repairing corrupted chunks during streaming.
 pub struct RepairingStream<T: Storage + 'static> {
-    inner: recall_entangler_storage::ByteStream,
+    inner: StorageByteStream,
     entangler: Entangler<T>,
     hash: String,
     metadata_hash: String,
@@ -43,7 +44,7 @@ impl<T: Storage + 'static> RepairingStream<T> {
         entangler: Entangler<T>,
         hash: String,
         metadata_hash: String,
-        inner: recall_entangler_storage::ByteStream,
+        inner: StorageByteStream,
     ) -> Self {
         Self {
             entangler,
