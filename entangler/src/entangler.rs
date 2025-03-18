@@ -194,11 +194,7 @@ impl<T: Storage> Entangler<T> {
 
         for parity_grid in exec.iter_parities(orig_grid) {
             let data = parity_grid.grid.assemble_data();
-            // Create a stream from the data
-            let data_stream = Box::pin(futures::stream::once(async move {
-                Ok::<Bytes, std::io::Error>(data)
-            }));
-            let upload_result = self.storage.upload_bytes(data_stream).await?;
+            let upload_result = self.storage.upload_bytes(bytes_to_stream(data)).await?;
             parity_hashes.insert(parity_grid.strand_type, upload_result.hash.clone());
             upload_results.push(upload_result);
         }
@@ -213,10 +209,7 @@ impl<T: Storage> Entangler<T> {
         };
 
         let metadata = serde_json::to_string(&metadata).unwrap();
-        // Create a stream from the metadata string
-        let metadata_stream = Box::pin(futures::stream::once(async move {
-            Ok::<Bytes, std::io::Error>(Bytes::from(metadata))
-        }));
+        let metadata_stream = bytes_to_stream(Bytes::from(metadata));
         let metadata_result = self.storage.upload_bytes(metadata_stream).await?;
         upload_results.push(metadata_result.clone());
 
@@ -482,6 +475,12 @@ where
         bytes.extend_from_slice(&chunk?);
     }
     Ok(bytes.freeze())
+}
+
+fn bytes_to_stream(bytes: Bytes) -> ByteStream {
+    Box::pin(futures::stream::once(
+        async move { Ok::<Bytes, Error>(bytes) },
+    ))
 }
 
 fn bytes_to_chunks(bytes: Bytes, chunk_size: u64) -> Vec<Bytes> {

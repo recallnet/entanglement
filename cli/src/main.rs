@@ -9,9 +9,11 @@ use std::net::SocketAddr;
 
 use bytes::Bytes;
 use clap::{Args, Parser, Subcommand};
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use std::str::FromStr;
 use stderrlog::Timestamp;
+use tokio::{fs::File, io};
+use tokio_util::io::ReaderStream;
 
 use recall_entangler::{ByteStream, Config, Entangler};
 use recall_entangler_storage::iroh::IrohStorage;
@@ -124,11 +126,6 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Upload(args) => {
-            use futures::TryStreamExt;
-            use tokio::fs::File;
-            use tokio::io::{self};
-            use tokio_util::io::ReaderStream;
-
             let file = File::open(&args.file)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to open file {}: {}", args.file, e))?;
