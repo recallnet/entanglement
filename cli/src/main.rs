@@ -10,7 +10,6 @@ use std::path::PathBuf;
 use bytes::Bytes;
 use clap::{Args, Parser, Subcommand};
 use futures::{StreamExt, TryStreamExt};
-use std::str::FromStr;
 use stderrlog::Timestamp;
 use tokio::{fs::File, io};
 use tokio_util::io::ReaderStream;
