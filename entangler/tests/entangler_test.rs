@@ -88,15 +88,23 @@ async fn load_metadata(hash: &str, storage: &impl Storage) -> Result<Metadata> {
     Ok(serde_json::from_slice(&read_stream(metadata_bytes).await?)?)
 }
 
-#[tokio::test]
-async fn test_upload_bytes_to_iroh() -> Result<()> {
+async fn create_iroh_endpoint() -> Result<(
+    iroh_blobs::net_protocol::Blobs<iroh_blobs::store::mem::Store>,
+    Router,
+)> {
     let endpoint = iroh::Endpoint::builder().bind().await?;
     let blobs = iroh_blobs::net_protocol::Blobs::memory().build(&endpoint);
-    let _router = Router::builder(endpoint)
+    let router = Router::builder(endpoint)
         .accept(iroh_blobs::ALPN, blobs.clone())
         .spawn()
         .await?;
 
+    Ok((blobs, router))
+}
+
+#[tokio::test]
+async fn test_upload_bytes_to_iroh() -> Result<()> {
+    let (blobs, _router) = create_iroh_endpoint().await?;
     let ent = new_entangler_from_client(blobs.client())?;
 
     let bytes = create_bytes(NUM_CHUNKS);
@@ -159,12 +167,7 @@ async fn test_upload_bytes_to_iroh() -> Result<()> {
 
 #[tokio::test]
 async fn test_download_bytes_from_iroh() -> Result<()> {
-    let endpoint = iroh::Endpoint::builder().bind().await?;
-    let blobs = iroh_blobs::net_protocol::Blobs::memory().build(&endpoint);
-    let _xrouter = Router::builder(endpoint)
-        .accept(iroh_blobs::ALPN, blobs.clone())
-        .spawn()
-        .await?;
+    let (blobs, _router) = create_iroh_endpoint().await?;
 
     let ent = new_entangler_from_client(blobs.client())?;
 
@@ -180,12 +183,7 @@ async fn test_download_bytes_from_iroh() -> Result<()> {
 
 #[tokio::test]
 async fn if_blob_is_missing_and_no_provided_metadata_error() -> Result<()> {
-    let endpoint = iroh::Endpoint::builder().bind().await?;
-    let blobs = iroh_blobs::net_protocol::Blobs::memory().build(&endpoint);
-    let router = Router::builder(endpoint)
-        .accept(iroh_blobs::ALPN, blobs.clone())
-        .spawn()
-        .await?;
+    let (blobs, router) = create_iroh_endpoint().await?;
 
     let ent = new_entangler_from_client(blobs.client())?;
 
@@ -193,13 +191,7 @@ async fn if_blob_is_missing_and_no_provided_metadata_error() -> Result<()> {
     let byte_stream = bytes_to_stream(bytes.clone());
     let result = ent.upload(byte_stream).await?;
 
-    let endpoint_with_metadata = iroh::Endpoint::builder().bind().await?;
-    let blobs_with_metadata =
-        iroh_blobs::net_protocol::Blobs::memory().build(&endpoint_with_metadata);
-    let _router_meta = Router::builder(endpoint_with_metadata)
-        .accept(iroh_blobs::ALPN, blobs_with_metadata.clone())
-        .spawn()
-        .await?;
+    let (blobs_with_metadata, _router) = create_iroh_endpoint().await?;
 
     load_parity_data_to_node(
         blobs_with_metadata.client(),
@@ -217,25 +209,14 @@ async fn if_blob_is_missing_and_no_provided_metadata_error() -> Result<()> {
 
 #[tokio::test]
 async fn if_blob_is_missing_and_metadata_is_provided_error() -> Result<()> {
-    let endpoint = iroh::Endpoint::builder().bind().await?;
-    let blobs = iroh_blobs::net_protocol::Blobs::memory().build(&endpoint);
-    let router = Router::builder(endpoint)
-        .accept(iroh_blobs::ALPN, blobs.clone())
-        .spawn()
-        .await?;
+    let (blobs, router) = create_iroh_endpoint().await?;
     let ent = new_entangler_from_client(blobs.client())?;
 
     let bytes = create_bytes(NUM_CHUNKS);
     let byte_stream = bytes_to_stream(bytes.clone());
     let result = ent.upload(byte_stream).await?;
 
-    let endpoint_with_metadata = iroh::Endpoint::builder().bind().await?;
-    let blobs_with_metadata =
-        iroh_blobs::net_protocol::Blobs::memory().build(&endpoint_with_metadata);
-    let _router_with_meta = Router::builder(endpoint_with_metadata)
-        .accept(iroh_blobs::ALPN, blobs_with_metadata.clone())
-        .spawn()
-        .await?;
+    let (blobs_with_metadata, _router) = create_iroh_endpoint().await?;
 
     load_parity_data_to_node(
         blobs_with_metadata.client(),
