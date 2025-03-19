@@ -9,7 +9,10 @@ use futures::stream;
 use futures_lite::{Stream, StreamExt};
 use iroh::{
     blobs::{util::SetTagOption, Hash},
-    client::{blobs::ReadAtLen, Iroh as Client},
+    client::{
+        blobs::{BlobStatus, ReadAtLen},
+        Iroh as Client,
+    },
 };
 use std::sync::Arc;
 use std::{path::Path, str::FromStr};
@@ -290,6 +293,27 @@ impl Storage for IrohStorage {
             num_chunks: reader.size().div_ceil(CHUNK_SIZE),
         })
     }
+
+    async fn get_blob_size(&self, hash: &str) -> Result<u64, StorageError> {
+        let hash = parse_hash(hash)?;
+
+        let status = self.client().blobs().status(hash).await.map_err(|e| {
+            let err_str = e.to_string();
+            if err_str.contains("not found") {
+                StorageError::BlobNotFound(hash.to_string())
+            } else {
+                StorageError::StorageError(storage::wrap_error(e))
+            }
+        })?;
+
+        if let BlobStatus::Complete { size, .. } = status {
+            Ok(size)
+        } else {
+            Err(StorageError::StorageError(storage::wrap_error(
+                anyhow::anyhow!("Blob is not complete"),
+            )))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -519,6 +543,33 @@ mod tests {
                 .is_some_and(|tag| tag.starts_with("ent-") && tag.len() == 40), // 4 + 36 (uuid)
             "Tag should be in the format \"ent-<uuid>\""
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_blob_size() -> Result<()> {
+        let storage = IrohStorage::new_in_memory().await?;
+        let data = Bytes::from("Hello, World!");
+        let upload_result = storage.upload_bytes(bytes_to_stream(data.clone())).await?;
+
+        let size = storage.get_blob_size(&upload_result.hash).await?;
+        assert_eq!(
+            size,
+            data.len() as u64,
+            "Blob size should match data length"
+        );
+
+        let result = storage.get_blob_size("invalid_hash").await;
+        assert!(result.is_err());
+        assert!(
+            matches!(result.unwrap_err(), StorageError::InvalidHash(_, _)),
+            "Expected InvalidHash error"
+        );
+
+        let valid_hash = "baebaebaebaebaebaebaebaebaebaebaebaebaebaebaebaebaebaebaebaebaeb";
+        let result = storage.get_blob_size(valid_hash).await;
+        assert!(result.is_err(), "Should fail for non-existent hash");
 
         Ok(())
     }

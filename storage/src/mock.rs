@@ -177,6 +177,22 @@ impl Storage for FakeStorage {
         })
     }
 
+    async fn get_blob_size(&self, hash: &str) -> Result<u64, StorageError> {
+        if self.fail_blobs.lock().unwrap().get(hash).is_some() {
+            return Err(StorageError::BlobNotFound(hash.to_string()));
+        }
+
+        let data = self.data.lock().unwrap();
+        let chunks = data
+            .get(hash)
+            .ok_or_else(|| StorageError::BlobNotFound(hash.to_string()))?;
+
+        // Calculate total size by summing up the size of all chunks
+        let total_size = chunks.iter().map(|chunk| chunk.len() as u64).sum();
+
+        Ok(total_size)
+    }
+
     async fn download_bytes(&self, hash: &str) -> Result<ByteStream, StorageError> {
         if self.fail_blobs.lock().unwrap().get(hash).is_some() {
             return Err(StorageError::BlobNotFound(hash.to_string()));
@@ -363,6 +379,10 @@ impl Storage for DummyStorage {
     async fn download_chunk(&self, _: &str, _: Self::ChunkId) -> Result<Bytes, StorageError> {
         Ok(Bytes::from("dummy data"))
     }
+
+    async fn get_blob_size(&self, _: &str) -> Result<u64, StorageError> {
+        Ok(10) // Fixed dummy size, same as in upload_bytes
+    }
 }
 
 #[derive(Clone)]
@@ -373,6 +393,7 @@ pub struct StubStorage {
     iter_chunks_result: Vec<(u64, Result<Bytes, StorageError>)>,
     download_chunk_result: HashMap<Option<(String, u64)>, Result<Bytes, StorageError>>,
     chunk_id_mapper_result: Result<DummyChunkIdMapper, StorageError>,
+    get_blob_size_result: HashMap<Option<String>, Result<u64, StorageError>>,
 }
 
 impl Default for StubStorage {
@@ -391,6 +412,7 @@ impl Default for StubStorage {
             iter_chunks_result: vec![(0, Ok(Bytes::from("dummy data")))],
             download_chunk_result: HashMap::new(),
             chunk_id_mapper_result: Ok(DummyChunkIdMapper {}),
+            get_blob_size_result: HashMap::new(),
         }
     }
 }
@@ -432,6 +454,16 @@ impl StubStorage {
 
     pub fn stub_chunk_id_mapper(&mut self, result: Result<DummyChunkIdMapper, StorageError>) {
         self.chunk_id_mapper_result = result;
+    }
+
+    /// Stub a response for get_blob_size method
+    ///
+    /// # Arguments
+    ///
+    /// * `hash` - The hash to match for this stub, or None to match any hash
+    /// * `result` - The result to return for this stub
+    pub fn stub_get_blob_size(&mut self, hash: Option<String>, result: Result<u64, StorageError>) {
+        self.get_blob_size_result.insert(hash, result);
     }
 }
 
@@ -496,6 +528,14 @@ impl Storage for StubStorage {
     async fn chunk_id_mapper(&self, _: &str) -> Result<Self::ChunkIdMapper, StorageError> {
         self.chunk_id_mapper_result.clone()
     }
+
+    async fn get_blob_size(&self, hash: &str) -> Result<u64, StorageError> {
+        self.get_blob_size_result
+            .get(&Some(hash.to_string()))
+            .or_else(|| self.get_blob_size_result.get(&None))
+            .cloned()
+            .unwrap_or(Ok(10)) // Default to 10 bytes if no stub provided
+    }
 }
 
 #[derive(Clone)]
@@ -506,6 +546,7 @@ pub struct SpyStorage {
     iter_chunks_calls: Arc<RwLock<Vec<String>>>,
     download_chunk_calls: Arc<RwLock<Vec<(String, u64)>>>,
     chunk_id_mapper_calls: Arc<RwLock<Vec<String>>>,
+    get_blob_size_calls: Arc<RwLock<Vec<String>>>,
 }
 
 impl std::ops::Deref for SpyStorage {
@@ -531,6 +572,7 @@ impl Default for SpyStorage {
             iter_chunks_calls: Arc::new(RwLock::new(Vec::new())),
             download_chunk_calls: Arc::new(RwLock::new(Vec::new())),
             chunk_id_mapper_calls: Arc::new(RwLock::new(Vec::new())),
+            get_blob_size_calls: Arc::new(RwLock::new(Vec::new())),
         }
     }
 }
@@ -554,6 +596,10 @@ impl SpyStorage {
 
     pub fn chunk_id_mapper_calls(&self) -> Vec<String> {
         self.chunk_id_mapper_calls.read().unwrap().clone()
+    }
+
+    pub fn get_blob_size_calls(&self) -> Vec<String> {
+        self.get_blob_size_calls.read().unwrap().clone()
     }
 }
 
@@ -620,6 +666,14 @@ impl Storage for SpyStorage {
             .unwrap()
             .push(hash.to_string());
         self.inner.chunk_id_mapper(hash).await
+    }
+
+    async fn get_blob_size(&self, hash: &str) -> Result<u64, StorageError> {
+        self.get_blob_size_calls
+            .write()
+            .unwrap()
+            .push(hash.to_string());
+        self.inner.get_blob_size(hash).await
     }
 }
 
@@ -868,6 +922,58 @@ mod tests {
 
         assert_eq!(data1, chunks1?);
         assert_eq!(data2, chunks2?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_blob_size() -> Result<()> {
+        let storage = FakeStorage::new();
+        let data = Bytes::from(vec![0u8; 3000]);
+        let upload_result = storage.upload_bytes(bytes_to_stream(data.clone())).await?;
+
+        let size = storage.get_blob_size(&upload_result.hash).await?;
+        assert_eq!(size, 3000, "Blob size should match data length");
+
+        // Test with non-existent hash
+        let result = storage.get_blob_size("non_existent_hash").await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), StorageError::BlobNotFound(_)));
+
+        // Test with failed blob
+        storage.fake_failed_download(&upload_result.hash);
+        let result = storage.get_blob_size(&upload_result.hash).await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), StorageError::BlobNotFound(_)));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_blob_size_spy_storage() -> Result<()> {
+        let mut storage = SpyStorage::default();
+
+        // Stub different results for different hashes
+        storage.stub_get_blob_size(Some("hash1".to_string()), Ok(100));
+        storage.stub_get_blob_size(Some("hash2".to_string()), Ok(200));
+        storage.stub_get_blob_size(
+            Some("error_hash".to_string()),
+            Err(StorageError::BlobNotFound("error_hash".to_string())),
+        );
+
+        assert_eq!(storage.get_blob_size("hash1").await?, 100);
+        assert_eq!(storage.get_blob_size("hash2").await?, 200);
+        assert!(storage.get_blob_size("error_hash").await.is_err());
+
+        // For non-stubbed hash, should fall back to default (10)
+        assert_eq!(storage.get_blob_size("other_hash").await?, 10);
+
+        let calls = storage.get_blob_size_calls();
+        assert_eq!(calls.len(), 4);
+        assert_eq!(calls[0], "hash1");
+        assert_eq!(calls[1], "hash2");
+        assert_eq!(calls[2], "error_hash");
+        assert_eq!(calls[3], "other_hash");
+
         Ok(())
     }
 
