@@ -4,34 +4,317 @@
 use crate::grid::{self, Grid, Pos};
 use crate::parity::{ParityGrid, StrandType};
 use anyhow::Result;
-
 use bytes::Bytes;
+use futures::{Stream, StreamExt};
+use std::error::Error as StdError;
+use std::fmt;
+use std::pin::Pin;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 
-/// The executer executes the entanglement process on the given grid.
-/// It creates `alpha` parity grids.
+/// Stream type for handling bytes with possible errors
+pub type ByteStream<E> = Pin<Box<dyn Stream<Item = Result<Bytes, E>> + Send + Unpin + 'static>>;
+
+/// The executer executes the entanglement process with streaming data.
+/// It creates `alpha` parity streams in parallel.
 pub struct Executer {
     alpha: u8,
+    leap_window: u64,
+}
+
+/// Result of the entanglement process
+pub struct EntanglementStreamResult {
+    /// Array of parity streams, one for each strand type
+    pub parity_streams: Vec<ByteStream<EntanglementError>>,
+    /// The strand types corresponding to the streams
+    pub strand_types: Vec<StrandType>,
+}
+
+/// A custom error type for entanglement operations
+#[derive(thiserror::Error, Debug, Clone)]
+pub enum EntanglementError {
+    #[error("Failed to send chunk to channel")]
+    SendError,
+    
+    #[error("Input stream error: {0}")]
+    InputError(String),
+    
+    #[error("Task join error")]
+    TaskJoinError,
+    
+    #[error("Storage error: {0}")]
+    StorageError(String),
 }
 
 impl Executer {
-    /// Create a new executer with the given alpha.
-    /// The alpha is the number of parity grids to create.
+    /// Create a new executer with the given alpha and leap window.
+    /// - alpha: The number of parity streams to create
+    /// - leap_window: The size of the leap window, which determines the wrapping behavior
     pub fn new(alpha: u8) -> Self {
-        Self { alpha }
+        Self { 
+            alpha,
+            leap_window: 1, // Default leap window size, will be updated during entanglement
+        }
     }
-
+    
+    /// Sets the leap window size
+    pub fn with_leap_window(mut self, leap_window: u64) -> Self {
+        self.leap_window = leap_window;
+        self
+    }
+    
     /// Executes the entanglement process on the given grid.
     /// It produces `alpha` parity grids one by one.
-    pub fn iter_parities(&self, grid: grid::Grid) -> impl Iterator<Item = ParityGrid> {
+    /// 
+    /// Note: This method is preserved for compatibility with the existing code.
+    pub fn iter_parities(&self, grid: crate::grid::Grid) -> impl Iterator<Item = crate::parity::ParityGrid> {
         let strand_types = vec![StrandType::Left, StrandType::Horizontal, StrandType::Right];
         strand_types
             .into_iter()
             .take(self.alpha as usize)
             .map(move |strand_type| create_parity_grid(&grid, strand_type).unwrap())
     }
+    /// Entangles the given input stream, producing `alpha` parity streams in parallel.
+    /// The parity streams are created according to the strand types.
+    pub async fn entangle<S, E>(&self, input_stream: S) -> Result<EntanglementStreamResult, EntanglementError>
+    where
+        S: Stream<Item = Result<Bytes, E>> + Send + Unpin + 'static,
+        E: StdError + Send + Sync + 'static,
+    {
+        let strand_types = vec![StrandType::Left, StrandType::Horizontal, StrandType::Right];
+        let selected_strands = strand_types.iter()
+            .take(self.alpha as usize)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        // Create channels for each parity stream
+        let mut receivers = Vec::with_capacity(self.alpha as usize);
+        let mut senders = Vec::with_capacity(self.alpha as usize);
+
+        for _ in 0..self.alpha {
+            let (tx, rx) = mpsc::channel::<Result<Bytes, EntanglementError>>(100);
+            senders.push(tx);
+            receivers.push(rx);
+        }
+
+        // Create output streams
+        let parity_streams = receivers
+            .into_iter()
+            .map(|rx| {
+                let stream = ReceiverStream::new(rx);
+                Box::pin(stream) as ByteStream<EntanglementError>
+            })
+            .collect::<Vec<_>>();
+
+        // Process the input stream in a separate task to avoid blocking
+        let leap_window = self.leap_window;
+        let strands_for_processing = selected_strands.clone();
+        tokio::spawn(async move {
+            if let Err(e) = process_input_stream(input_stream, senders, strands_for_processing, leap_window).await {
+                eprintln!("Error processing input stream: {}", e);
+            }
+        });
+
+        Ok(EntanglementStreamResult {
+            parity_streams,
+            strand_types: selected_strands,
+        })
+    }
 }
 
+/// Processes the input stream and generates parity chunks for each strand type
+async fn process_input_stream<S, E>(
+    mut input: S,
+    senders: Vec<mpsc::Sender<Result<Bytes, EntanglementError>>>,
+    strand_types: Vec<StrandType>,
+    leap_window: u64,
+) -> Result<(), EntanglementError>
+where
+    S: Stream<Item = Result<Bytes, E>> + Unpin,
+    E: StdError + Send + Sync + 'static,
+{
+    // We need to maintain a buffer of chunks for each strand
+    // The buffer size depends on the leap window
+    let buffer_size = leap_window as usize;
+    let mut chunk_buffer = Vec::with_capacity(buffer_size);
+    
+    // Read chunks from the input stream
+    while let Some(chunk_result) = input.next().await {
+        match chunk_result {
+            Ok(current_chunk) => {
+                // Add the current chunk to the buffer
+                chunk_buffer.push(current_chunk);
+                
+                // Once we have enough chunks in the buffer, we can start producing parity chunks
+                if chunk_buffer.len() >= 2 {
+                    let mut parity_chunks = Vec::with_capacity(strand_types.len());
+                    
+                    // Generate parity chunks for each strand type
+                    for strand_type in &strand_types {
+                        let last_idx = chunk_buffer.len() - 1;
+                        let prev_idx = match strand_type {
+                            StrandType::Left => {
+                                // For Left strand (diagonal up), we need to wrap around
+                                // if at the top of the column
+                                if last_idx % buffer_size == 0 {
+                                    if last_idx >= buffer_size {
+                                        // We have a previous column, wrap to the bottom
+                                        last_idx - 1
+                                    } else {
+                                        // Safeguard for the first column
+                                        last_idx
+                                    }
+                                } else {
+                                    // Normal case - move up one row
+                                    last_idx - 1
+                                }
+                            },
+                            StrandType::Horizontal => {
+                                // For Horizontal strand, we use the chunk at the same height
+                                // in the previous column
+                                if last_idx >= buffer_size {
+                                    // We have a previous column
+                                    last_idx - buffer_size
+                                } else {
+                                    // Safeguard for the first column
+                                    last_idx
+                                }
+                            },
+                            StrandType::Right => {
+                                // For Right strand (diagonal down), we need to wrap around
+                                // if at the bottom of the column
+                                if last_idx % buffer_size == buffer_size - 1 {
+                                    if last_idx >= buffer_size {
+                                        // We have a previous column, wrap to the top
+                                        last_idx - (buffer_size - 1)
+                                    } else {
+                                        // Safeguard for the first column
+                                        last_idx
+                                    }
+                                } else {
+                                    // Normal case - move down one row
+                                    last_idx + 1
+                                }
+                            }
+                        };
+                        
+                        // Make sure the previous index is within bounds
+                        let prev_idx = prev_idx % chunk_buffer.len();
+                        
+                        // Create the parity chunk by entangling the current and previous chunks
+                        let parity = entangle_chunks(&chunk_buffer[prev_idx], &chunk_buffer[last_idx]);
+                        parity_chunks.push(parity);
+                    }
+                    
+                    // Send parity chunks to their respective channels
+                    for (i, chunk) in parity_chunks.into_iter().enumerate() {
+                        if i < senders.len() {
+                            senders[i].send(Ok(chunk))
+                                .await
+                                .map_err(|_| EntanglementError::SendError)?;
+                        }
+                    }
+                    
+                    // Remove older chunks to keep the buffer size manageable
+                    // We need to keep at least buffer_size chunks in the buffer
+                    if chunk_buffer.len() > 2 * buffer_size {
+                        chunk_buffer.drain(0..buffer_size);
+                    }
+                }
+            },
+            Err(e) => {
+                // Convert external error to our error type
+                let error = EntanglementError::InputError(format!("{}", e));
+                
+                // Forward the error to all senders
+                for sender in &senders {
+                    sender.send(Err(error.clone()))
+                        .await
+                        .map_err(|_| EntanglementError::SendError)?;
+                }
+                
+                return Err(error);
+            }
+        }
+    }
+    
+    // Handle wrapping around - entangle the last chunks with the first chunks
+    if chunk_buffer.len() >= 2 {
+        for i in 0..buffer_size {
+            if i + buffer_size >= chunk_buffer.len() {
+                break;
+            }
+            
+            let mut parity_chunks = Vec::with_capacity(strand_types.len());
+            
+            for strand_type in &strand_types {
+                let last_idx = i + buffer_size;
+                let first_idx = match strand_type {
+                    StrandType::Left => {
+                        if i % buffer_size == 0 {
+                            // We're at the top of the column, wrap to the bottom
+                            if i + buffer_size - 1 < chunk_buffer.len() {
+                                i + buffer_size - 1
+                            } else {
+                                i  // Failsafe, just use self
+                            }
+                        } else {
+                            // Normal case, move up one row
+                            i - 1
+                        }
+                    },
+                    StrandType::Horizontal => i,  // Same row in previous column
+                    StrandType::Right => {
+                        if i % buffer_size == buffer_size - 1 {
+                            // We're at the bottom of the column, wrap to the top
+                            if i >= buffer_size {
+                                i - buffer_size + 1
+                            } else {
+                                i  // Failsafe, just use self
+                            }
+                        } else {
+                            // Normal case, move down one row
+                            i + 1
+                        }
+                    }
+                };
+                
+                // Make sure the index is within bounds
+                let first_idx = first_idx % chunk_buffer.len();
+                
+                // Create the parity chunk
+                let parity = entangle_chunks(&chunk_buffer[first_idx], &chunk_buffer[last_idx]);
+                parity_chunks.push(parity);
+            }
+            
+            // Send parity chunks to their respective channels
+            for (j, chunk) in parity_chunks.into_iter().enumerate() {
+                if j < senders.len() {
+                    senders[j].send(Ok(chunk))
+                        .await
+                        .map_err(|_| EntanglementError::SendError)?;
+                }
+            }
+        }
+    }
+    
+    // Close the channels by dropping the senders
+    drop(senders);
+    
+    Ok(())
+}
+
+/// Entangles two chunks using XOR operation for stream processing
 fn entangle_chunks(chunk1: &Bytes, chunk2: &Bytes) -> Bytes {
+    let mut result = Vec::with_capacity(chunk1.len());
+    for i in 0..chunk1.len() {
+        result.push(chunk1[i] ^ chunk2[i % chunk2.len()]);
+    }
+    Bytes::from(result)
+}
+
+/// For backwards compatibility: entangles two chunks using XOR operation
+fn entangle_grid_chunks(chunk1: &Bytes, chunk2: &Bytes) -> Bytes {
     let mut chunk = Vec::with_capacity(chunk1.len());
     for i in 0..chunk1.len() {
         chunk.push(chunk1[i] ^ chunk2[i]);
@@ -50,14 +333,14 @@ fn create_parity_grid(grid: &Grid, strand_type: StrandType) -> Result<ParityGrid
             if let Some(cell) = grid.try_get_cell(pos) {
                 let next_pos = pos + strand_type;
                 if let Some(pair) = grid.try_get_cell(next_pos) {
-                    parity_grid.set_cell(pos, entangle_chunks(cell, pair));
+                    parity_grid.set_cell(pos, entangle_grid_chunks(cell, pair));
                 } else {
                     // we need LW size. At the moment we assume it's square with side equal to grid's height
                     let lw_size = grid.get_height();
                     // calculate the number of steps to go along the strand
                     let steps = lw_size - (next_pos.x as u64 % lw_size);
                     let pair = grid.get_cell(next_pos.near(strand_type.into(), steps));
-                    parity_grid.set_cell(pos, entangle_chunks(cell, pair));
+                    parity_grid.set_cell(pos, entangle_grid_chunks(cell, pair));
                 }
             }
         }
@@ -68,251 +351,125 @@ fn create_parity_grid(grid: &Grid, strand_type: StrandType) -> Result<ParityGrid
     })
 }
 
-use futures::{Stream, StreamExt};
-use std::error::Error as StdError;
-use std::fmt;
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
-
-// Main function that processes the stream and generates parity chunks
-async fn upload_bytes<S, E>(stream: S) -> Result<UploadResult, UploadError>
-where
-    S: Stream<Item = Result<Bytes, E>> + Send + Unpin + 'static,
-    E: StdError + Send + Sync + 'static,
-{
-    // Create channels for the three parity streams
-    let (tx_a, rx_a) = mpsc::channel::<Result<Bytes, UploadError>>(100);
-    let (tx_b, rx_b) = mpsc::channel::<Result<Bytes, UploadError>>(100);
-    let (tx_c, rx_c) = mpsc::channel::<Result<Bytes, UploadError>>(100);
-
-    // Create output streams
-    let stream_a = ReceiverStream::new(rx_a);
-    let stream_b = ReceiverStream::new(rx_b);
-    let stream_c = ReceiverStream::new(rx_c);
-
-    // Start the upload processes for each parity stream concurrently
-    let upload_handle = tokio::spawn(async move {
-        tokio::try_join!(
-            upload_to_storage(stream_a, "type_a"),
-            upload_to_storage(stream_b, "type_b"),
-            upload_to_storage(stream_c, "type_c")
-        )
-    });
-
-    // Process the input stream in a separate task
-    let process_result = process_input_stream(stream, tx_a, tx_b, tx_c).await?;
-
-    // Wait for all uploads to complete
-    let upload_results = upload_handle
-        .await
-        .map_err(|_| UploadError::TaskJoinError)??;
-
-    Ok(UploadResult {
-        original_size: process_result.original_size,
-        parity_results: [upload_results.0, upload_results.1, upload_results.2],
-    })
-}
-
-// Process the input stream and generate parity chunks
-async fn process_input_stream<S, E>(
-    mut input: S,
-    tx_a: mpsc::Sender<Result<Bytes, UploadError>>,
-    tx_b: mpsc::Sender<Result<Bytes, UploadError>>,
-    tx_c: mpsc::Sender<Result<Bytes, UploadError>>,
-) -> Result<ProcessResult, UploadError>
-where
-    S: Stream<Item = Result<Bytes, E>> + Unpin,
-    E: StdError + Send + Sync + 'static,
-{
-    let mut first_chunk: Option<Bytes> = None;
-    let mut prev_chunk: Option<Bytes> = None;
-    let mut total_bytes = 0;
-
-    // Process the stream chunk by chunk
-    while let Some(chunk_result) = input.next().await {
-        match chunk_result {
-            Ok(current_chunk) => {
-                total_bytes += current_chunk.len();
-
-                // Store the first chunk for the wrap-around case
-                if first_chunk.is_none() {
-                    first_chunk = Some(current_chunk.clone());
-                }
-
-                // If we have a previous chunk, generate parity chunks
-                if let Some(prev) = &prev_chunk {
-                    let parity_a = generate_parity_a(prev, &current_chunk);
-                    let parity_b = generate_parity_b(prev, &current_chunk);
-                    let parity_c = generate_parity_c(prev, &current_chunk);
-
-                    // Send parity chunks to their respective channels
-                    tx_a.send(Ok(parity_a))
-                        .await
-                        .map_err(|_| UploadError::SendError)?;
-                    tx_b.send(Ok(parity_b))
-                        .await
-                        .map_err(|_| UploadError::SendError)?;
-                    tx_c.send(Ok(parity_c))
-                        .await
-                        .map_err(|_| UploadError::SendError)?;
-                }
-
-                // Update previous chunk for next iteration
-                prev_chunk = Some(current_chunk);
-            }
-            Err(e) => {
-                // Convert external error to our error type
-                let upload_error = UploadError::InputError(format!("{}", e));
-
-                // Forward errors to all channels
-                tx_a.send(Err(upload_error.clone()))
-                    .await
-                    .map_err(|_| UploadError::SendError)?;
-                tx_b.send(Err(upload_error.clone()))
-                    .await
-                    .map_err(|_| UploadError::SendError)?;
-                tx_c.send(Err(upload_error))
-                    .await
-                    .map_err(|_| UploadError::SendError)?;
-
-                return Err(UploadError::InputError(format!("{}", e)));
-            }
-        }
-    }
-
-    // Handle the wrap-around case: combine last chunk with first chunk
-    if let (Some(last), Some(first)) = (&prev_chunk, &first_chunk) {
-        let parity_a = generate_parity_a(last, first);
-        let parity_b = generate_parity_b(last, first);
-        let parity_c = generate_parity_c(last, first);
-
-        tx_a.send(Ok(parity_a))
-            .await
-            .map_err(|_| UploadError::SendError)?;
-        tx_b.send(Ok(parity_b))
-            .await
-            .map_err(|_| UploadError::SendError)?;
-        tx_c.send(Ok(parity_c))
-            .await
-            .map_err(|_| UploadError::SendError)?;
-    }
-
-    // Close the channels by dropping the senders
-    drop(tx_a);
-    drop(tx_b);
-    drop(tx_c);
-
-    Ok(ProcessResult {
-        original_size: total_bytes,
-    })
-}
-
-// Functions to generate different types of parity chunks (examples)
-fn generate_parity_a(chunk1: &Bytes, chunk2: &Bytes) -> Bytes {
-    // Example: XOR operation
-    let mut result = Vec::with_capacity(chunk1.len());
-    for i in 0..chunk1.len() {
-        result.push(chunk1[i] ^ chunk2[i % chunk2.len()]);
-    }
-    Bytes::from(result)
-}
-
-fn generate_parity_b(chunk1: &Bytes, chunk2: &Bytes) -> Bytes {
-    // Example: Addition with wrap-around
-    let mut result = Vec::with_capacity(chunk1.len());
-    for i in 0..chunk1.len() {
-        result.push(chunk1[i].wrapping_add(chunk2[i % chunk2.len()]));
-    }
-    Bytes::from(result)
-}
-
-fn generate_parity_c(chunk1: &Bytes, chunk2: &Bytes) -> Bytes {
-    // Example: Another binary manipulation
-    let mut result = Vec::with_capacity(chunk1.len());
-    for i in 0..chunk1.len() {
-        result.push(chunk1[i].wrapping_sub(chunk2[i % chunk2.len()]));
-    }
-    Bytes::from(result)
-}
-
-// Upload a stream to storage
-async fn upload_to_storage<S>(
-    mut stream: S,
-    stream_type: &str,
-) -> Result<StorageResult, UploadError>
-where
-    S: Stream<Item = Result<Bytes, UploadError>> + Unpin,
-{
-    let mut total_bytes = 0;
-    let mut chunks_count = 0;
-
-    while let Some(chunk_result) = stream.next().await {
-        match chunk_result {
-            Ok(chunk) => {
-                // Here you would implement the actual upload logic
-                // storage_client.upload_chunk(chunk, stream_type).await?;
-
-                total_bytes += chunk.len();
-                chunks_count += 1;
-            }
-            Err(e) => return Err(e),
-        }
-    }
-
-    Ok(StorageResult {
-        stream_type: stream_type.to_string(),
-        total_bytes,
-        chunks_count,
-    })
-}
-
-// Result types
-struct UploadResult {
-    original_size: usize,
-    parity_results: [StorageResult; 3],
-}
-
-struct ProcessResult {
-    original_size: usize,
-}
-
-struct StorageResult {
-    stream_type: String,
-    total_bytes: usize,
-    chunks_count: usize,
-}
-
-// Custom error type
-#[derive(Clone)]
-enum UploadError {
-    SendError,
-    InputError(String),
-    TaskJoinError,
-    StorageError(String),
-}
-
-impl fmt::Display for UploadError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            UploadError::SendError => write!(f, "Failed to send chunk to channel"),
-            UploadError::InputError(msg) => write!(f, "Input stream error: {}", msg),
-            UploadError::TaskJoinError => write!(f, "Task join error"),
-            UploadError::StorageError(msg) => write!(f, "Storage error: {}", msg),
-        }
-    }
-}
-
-impl fmt::Debug for UploadError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, f)
-    }
-}
-
-impl StdError for UploadError {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::stream;
+    use tokio_stream::StreamExt;
+
+    // Helper function to create a stream of bytes
+    fn create_test_stream(data: Vec<Vec<u8>>) -> impl Stream<Item = Result<Bytes, std::io::Error>> {
+        stream::iter(data.into_iter().map(|chunk| Ok(Bytes::from(chunk))))
+    }
+
+    #[tokio::test]
+    async fn test_stream_entangle_simple() {
+        // Create a simple stream with two chunks
+        let chunk1 = vec![1, 2, 3, 4];
+        let chunk2 = vec![5, 6, 7, 8];
+        let input_stream = create_test_stream(vec![chunk1.clone(), chunk2.clone()]);
+        
+        // Create an executer with alpha=3 (all strand types)
+        let executer = Executer::new(3).with_leap_window(1);
+        
+        // Entangle the stream
+        let result = executer.entangle(input_stream).await.unwrap();
+        
+        // Verify we got 3 parity streams (Left, Horizontal, Right)
+        assert_eq!(result.parity_streams.len(), 3);
+        assert_eq!(result.strand_types.len(), 3);
+        assert_eq!(result.strand_types[0], StrandType::Left);
+        assert_eq!(result.strand_types[1], StrandType::Horizontal);
+        assert_eq!(result.strand_types[2], StrandType::Right);
+        
+        // Collect from each parity stream to verify contents
+        let mut parity_results = Vec::new();
+        for (i, mut stream) in result.parity_streams.into_iter().enumerate() {
+            let mut chunks = Vec::new();
+            while let Some(chunk_result) = stream.next().await {
+                chunks.push(chunk_result.unwrap().to_vec());
+            }
+            // Each strand has at least one chunk for this simple case
+            assert!(!chunks.is_empty(), "Parity stream {} should have chunks", i);
+            parity_results.push(chunks);
+        }
+        
+        // Each parity stream has its own generation function, so we just verify they exist
+        // and have valid data (non-empty and right size)
+        for (i, chunks) in parity_results.iter().enumerate() {
+            for chunk in chunks {
+                assert_eq!(chunk.len(), 4, "Parity chunk {} should be 4 bytes long", i);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_stream_entangle_with_error() {
+        // Create a stream that yields an error
+        let error_stream = stream::iter(vec![
+            Ok(Bytes::from(vec![1, 2, 3, 4])),
+            Ok(Bytes::from(vec![5, 6, 7, 8])),
+            Err(std::io::Error::new(std::io::ErrorKind::Other, "test error"))
+        ]);
+        
+        // Create an executer
+        let executer = Executer::new(1).with_leap_window(1);
+        
+        // Entangle the stream
+        let result = executer.entangle(error_stream).await.unwrap();
+        
+        // Verify we got 1 parity stream
+        assert_eq!(result.parity_streams.len(), 1);
+        
+        // Collect from the parity stream to verify we get the error
+        let mut stream = result.parity_streams.into_iter().next().unwrap();
+        let mut error_received = false;
+        
+        while let Some(result) = stream.next().await {
+            if result.is_err() {
+                error_received = true;
+                break;
+            }
+        }
+        
+        assert!(error_received, "Should have received error from parity stream");
+    }
+
+    #[tokio::test]
+    async fn test_stream_entangle_multiple_chunks() {
+        // Create a stream with multiple chunks
+        let chunks = vec![
+            vec![1, 2, 3, 4],
+            vec![5, 6, 7, 8],
+            vec![9, 10, 11, 12],
+            vec![13, 14, 15, 16],
+            vec![17, 18, 19, 20],
+        ];
+        let input_stream = create_test_stream(chunks.clone());
+        
+        // Create an executer with just one strand type for simplicity
+        let executer = Executer::new(1).with_leap_window(2);
+        
+        // Entangle the stream
+        let result = executer.entangle(input_stream).await.unwrap();
+        
+        // Verify we got 1 parity stream
+        assert_eq!(result.parity_streams.len(), 1);
+        
+        // Collect from the parity stream
+        let mut stream = result.parity_streams.into_iter().next().unwrap();
+        let mut parity_chunks = Vec::new();
+        
+        while let Some(result) = stream.next().await {
+            parity_chunks.push(result.unwrap().to_vec());
+        }
+        
+        // We should get at least chunks.len() - 1 parity chunks
+        assert!(parity_chunks.len() >= chunks.len() - 1, 
+            "Expected at least {} parity chunks but got {}", 
+            chunks.len() - 1, parity_chunks.len());
+    }
+    
     use crate::grid::Grid;
     use bytes::Bytes;
     use std::str;
