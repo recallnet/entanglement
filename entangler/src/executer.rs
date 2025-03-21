@@ -68,6 +68,248 @@ fn create_parity_grid(grid: &Grid, strand_type: StrandType) -> Result<ParityGrid
     })
 }
 
+use futures::{Stream, StreamExt};
+use std::error::Error as StdError;
+use std::fmt;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
+
+// Main function that processes the stream and generates parity chunks
+async fn upload_bytes<S, E>(stream: S) -> Result<UploadResult, UploadError>
+where
+    S: Stream<Item = Result<Bytes, E>> + Send + Unpin + 'static,
+    E: StdError + Send + Sync + 'static,
+{
+    // Create channels for the three parity streams
+    let (tx_a, rx_a) = mpsc::channel::<Result<Bytes, UploadError>>(100);
+    let (tx_b, rx_b) = mpsc::channel::<Result<Bytes, UploadError>>(100);
+    let (tx_c, rx_c) = mpsc::channel::<Result<Bytes, UploadError>>(100);
+
+    // Create output streams
+    let stream_a = ReceiverStream::new(rx_a);
+    let stream_b = ReceiverStream::new(rx_b);
+    let stream_c = ReceiverStream::new(rx_c);
+
+    // Start the upload processes for each parity stream concurrently
+    let upload_handle = tokio::spawn(async move {
+        tokio::try_join!(
+            upload_to_storage(stream_a, "type_a"),
+            upload_to_storage(stream_b, "type_b"),
+            upload_to_storage(stream_c, "type_c")
+        )
+    });
+
+    // Process the input stream in a separate task
+    let process_result = process_input_stream(stream, tx_a, tx_b, tx_c).await?;
+
+    // Wait for all uploads to complete
+    let upload_results = upload_handle
+        .await
+        .map_err(|_| UploadError::TaskJoinError)??;
+
+    Ok(UploadResult {
+        original_size: process_result.original_size,
+        parity_results: [upload_results.0, upload_results.1, upload_results.2],
+    })
+}
+
+// Process the input stream and generate parity chunks
+async fn process_input_stream<S, E>(
+    mut input: S,
+    tx_a: mpsc::Sender<Result<Bytes, UploadError>>,
+    tx_b: mpsc::Sender<Result<Bytes, UploadError>>,
+    tx_c: mpsc::Sender<Result<Bytes, UploadError>>,
+) -> Result<ProcessResult, UploadError>
+where
+    S: Stream<Item = Result<Bytes, E>> + Unpin,
+    E: StdError + Send + Sync + 'static,
+{
+    let mut first_chunk: Option<Bytes> = None;
+    let mut prev_chunk: Option<Bytes> = None;
+    let mut total_bytes = 0;
+
+    // Process the stream chunk by chunk
+    while let Some(chunk_result) = input.next().await {
+        match chunk_result {
+            Ok(current_chunk) => {
+                total_bytes += current_chunk.len();
+
+                // Store the first chunk for the wrap-around case
+                if first_chunk.is_none() {
+                    first_chunk = Some(current_chunk.clone());
+                }
+
+                // If we have a previous chunk, generate parity chunks
+                if let Some(prev) = &prev_chunk {
+                    let parity_a = generate_parity_a(prev, &current_chunk);
+                    let parity_b = generate_parity_b(prev, &current_chunk);
+                    let parity_c = generate_parity_c(prev, &current_chunk);
+
+                    // Send parity chunks to their respective channels
+                    tx_a.send(Ok(parity_a))
+                        .await
+                        .map_err(|_| UploadError::SendError)?;
+                    tx_b.send(Ok(parity_b))
+                        .await
+                        .map_err(|_| UploadError::SendError)?;
+                    tx_c.send(Ok(parity_c))
+                        .await
+                        .map_err(|_| UploadError::SendError)?;
+                }
+
+                // Update previous chunk for next iteration
+                prev_chunk = Some(current_chunk);
+            }
+            Err(e) => {
+                // Convert external error to our error type
+                let upload_error = UploadError::InputError(format!("{}", e));
+
+                // Forward errors to all channels
+                tx_a.send(Err(upload_error.clone()))
+                    .await
+                    .map_err(|_| UploadError::SendError)?;
+                tx_b.send(Err(upload_error.clone()))
+                    .await
+                    .map_err(|_| UploadError::SendError)?;
+                tx_c.send(Err(upload_error))
+                    .await
+                    .map_err(|_| UploadError::SendError)?;
+
+                return Err(UploadError::InputError(format!("{}", e)));
+            }
+        }
+    }
+
+    // Handle the wrap-around case: combine last chunk with first chunk
+    if let (Some(last), Some(first)) = (&prev_chunk, &first_chunk) {
+        let parity_a = generate_parity_a(last, first);
+        let parity_b = generate_parity_b(last, first);
+        let parity_c = generate_parity_c(last, first);
+
+        tx_a.send(Ok(parity_a))
+            .await
+            .map_err(|_| UploadError::SendError)?;
+        tx_b.send(Ok(parity_b))
+            .await
+            .map_err(|_| UploadError::SendError)?;
+        tx_c.send(Ok(parity_c))
+            .await
+            .map_err(|_| UploadError::SendError)?;
+    }
+
+    // Close the channels by dropping the senders
+    drop(tx_a);
+    drop(tx_b);
+    drop(tx_c);
+
+    Ok(ProcessResult {
+        original_size: total_bytes,
+    })
+}
+
+// Functions to generate different types of parity chunks (examples)
+fn generate_parity_a(chunk1: &Bytes, chunk2: &Bytes) -> Bytes {
+    // Example: XOR operation
+    let mut result = Vec::with_capacity(chunk1.len());
+    for i in 0..chunk1.len() {
+        result.push(chunk1[i] ^ chunk2[i % chunk2.len()]);
+    }
+    Bytes::from(result)
+}
+
+fn generate_parity_b(chunk1: &Bytes, chunk2: &Bytes) -> Bytes {
+    // Example: Addition with wrap-around
+    let mut result = Vec::with_capacity(chunk1.len());
+    for i in 0..chunk1.len() {
+        result.push(chunk1[i].wrapping_add(chunk2[i % chunk2.len()]));
+    }
+    Bytes::from(result)
+}
+
+fn generate_parity_c(chunk1: &Bytes, chunk2: &Bytes) -> Bytes {
+    // Example: Another binary manipulation
+    let mut result = Vec::with_capacity(chunk1.len());
+    for i in 0..chunk1.len() {
+        result.push(chunk1[i].wrapping_sub(chunk2[i % chunk2.len()]));
+    }
+    Bytes::from(result)
+}
+
+// Upload a stream to storage
+async fn upload_to_storage<S>(
+    mut stream: S,
+    stream_type: &str,
+) -> Result<StorageResult, UploadError>
+where
+    S: Stream<Item = Result<Bytes, UploadError>> + Unpin,
+{
+    let mut total_bytes = 0;
+    let mut chunks_count = 0;
+
+    while let Some(chunk_result) = stream.next().await {
+        match chunk_result {
+            Ok(chunk) => {
+                // Here you would implement the actual upload logic
+                // storage_client.upload_chunk(chunk, stream_type).await?;
+
+                total_bytes += chunk.len();
+                chunks_count += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    Ok(StorageResult {
+        stream_type: stream_type.to_string(),
+        total_bytes,
+        chunks_count,
+    })
+}
+
+// Result types
+struct UploadResult {
+    original_size: usize,
+    parity_results: [StorageResult; 3],
+}
+
+struct ProcessResult {
+    original_size: usize,
+}
+
+struct StorageResult {
+    stream_type: String,
+    total_bytes: usize,
+    chunks_count: usize,
+}
+
+// Custom error type
+#[derive(Clone)]
+enum UploadError {
+    SendError,
+    InputError(String),
+    TaskJoinError,
+    StorageError(String),
+}
+
+impl fmt::Display for UploadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            UploadError::SendError => write!(f, "Failed to send chunk to channel"),
+            UploadError::InputError(msg) => write!(f, "Input stream error: {}", msg),
+            UploadError::TaskJoinError => write!(f, "Task join error"),
+            UploadError::StorageError(msg) => write!(f, "Storage error: {}", msg),
+        }
+    }
+}
+
+impl fmt::Debug for UploadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+impl StdError for UploadError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

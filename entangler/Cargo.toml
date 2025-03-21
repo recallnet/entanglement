@@ -21,6 +21,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = { workspace = true }
 
 recall_entangler_storage = { version = "0.1.0", path = "../storage", features = [] }
 
