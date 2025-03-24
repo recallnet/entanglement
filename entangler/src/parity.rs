@@ -16,11 +16,35 @@ pub enum StrandType {
 }
 
 impl StrandType {
+    /// Turns the strand type into an integer that can be used for navigation in the grid.
     pub fn to_i64(self) -> i64 {
         match self {
             StrandType::Left => -1,
             StrandType::Horizontal => 0,
             StrandType::Right => 1,
+        }
+    }
+
+    /// Turns the strand type into an integer that can be used indexing into a vector.
+    /// This is useful for storing the strand type in a vector.
+    /// The order is: Left, Horizontal, Right.
+    pub fn to_index(self) -> usize {
+        match self {
+            StrandType::Left => 0,
+            StrandType::Horizontal => 1,
+            StrandType::Right => 2,
+        }
+    }
+
+    /// Converts an index into a strand type.
+    /// This is useful for converting a vector index into a strand type.
+    /// The order is: Left, Horizontal, Right.
+    pub fn try_from_index(index: usize) -> Option<Self> {
+        match index {
+            0 => Some(StrandType::Left),
+            1 => Some(StrandType::Horizontal),
+            2 => Some(StrandType::Right),
+            _ => None,
         }
     }
 

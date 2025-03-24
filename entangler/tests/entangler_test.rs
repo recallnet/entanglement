@@ -62,7 +62,7 @@ async fn load_parity_data_to_node<S>(
 
     let metadata_bytes = target_node.blobs().read_to_bytes(metadata_hash).await?;
     let metadata: Metadata = serde_json::from_slice(&metadata_bytes)?;
-    for parity_hash_str in metadata.parity_hashes.values() {
+    for parity_hash_str in &metadata.parity_hashes {
         let parity_hash = iroh::blobs::Hash::from_str(parity_hash_str)?;
         target_node
             .blobs()
@@ -125,8 +125,10 @@ async fn test_upload_bytes_to_iroh() -> Result<()> {
     // Verify we have the expected number of upload results
     assert_eq!(result.upload_results.len(), 1 + 3 + 1); // original blob + 3 parity blobs + metadata
 
-    for (strand_type, parity_hash) in &metadata.parity_hashes {
-        let parity_hash = iroh::blobs::Hash::from_str(parity_hash)?;
+    for index in 0..metadata.parity_hashes.len() {
+        let parity_hash_str = &metadata.parity_hashes[index];
+        let strand_type = StrandType::try_from_index(index).unwrap();
+        let parity_hash = iroh::blobs::Hash::from_str(parity_hash_str)?;
         let parity = node.blobs().read_to_bytes(parity_hash).await?;
         let mut expected_parity =
             BytesMut::with_capacity(NUM_CHUNKS as usize * CHUNK_SIZE as usize);
@@ -360,7 +362,8 @@ async fn if_stream_fails_should_repair_and_continue_where_left_off() -> Result<(
 }
 
 fn make_parity_unavailable(st: &FakeStorage, metadata: &Metadata, strand: StrandType) {
-    let hash = &metadata.parity_hashes[&strand];
+    // Find the index for this strand type
+    let hash = &metadata.parity_hashes[strand.to_index()];
     st.fake_failed_download(hash);
     st.fake_failed_chunks(hash, (0..NUM_CHUNKS).collect());
 }
@@ -618,7 +621,8 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
 
                 make_parity_unavailable(st, metadata, StrandType::Right);
 
-                let h_parity_hash = &metadata.parity_hashes[&StrandType::Horizontal];
+                let h_index = StrandType::Horizontal.to_index();
+                let h_parity_hash = &metadata.parity_hashes[h_index];
                 st.fake_failed_download(h_parity_hash);
                 st.fake_failed_chunks(h_parity_hash, get_all_chunks_but_strand_revolution(StrandType::Horizontal));
             },
@@ -631,7 +635,8 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
 
                 make_parity_unavailable(st, metadata, StrandType::Left);
 
-                let r_parity_hash = &metadata.parity_hashes[&StrandType::Right];
+                let r_index = StrandType::Right.to_index();
+                let r_parity_hash = &metadata.parity_hashes[r_index];
                 st.fake_failed_download(r_parity_hash);
                 st.fake_failed_chunks(r_parity_hash, get_all_chunks_but_strand_revolution(StrandType::Right));
             },
@@ -644,7 +649,8 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
 
                 make_parity_unavailable(st, metadata, StrandType::Horizontal);
 
-                let l_parity_hash = &metadata.parity_hashes[&StrandType::Left];
+                let l_index = StrandType::Left.to_index();
+                let l_parity_hash = &metadata.parity_hashes[l_index];
                 st.fake_failed_download(l_parity_hash);
                 st.fake_failed_chunks(l_parity_hash, get_all_chunks_but_strand_revolution(StrandType::Left));
             },
@@ -1210,6 +1216,53 @@ async fn test_metadata_fields() -> Result<()> {
                 upload_result.info["tag"],
                 format!("tag-{}", upload_result.hash),
                 "Tag should match hash"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_deterministic_metadata_hash() -> Result<()> {
+    let storage = FakeStorage::new();
+    let ent = Entangler::new(storage.clone(), Config::new(3, HEIGHT as u8, HEIGHT as u8))?;
+    let bytes = create_bytes(NUM_CHUNKS);
+
+    // Generate the first metadata hash
+    let byte_stream = bytes_to_stream(bytes.clone());
+    let first_result = ent.upload(byte_stream).await?;
+    let first_metadata_hash = first_result.metadata_hash;
+
+    // Run a few more times with the same data and verify the hash remains the same
+    let iterations = 5;
+    for i in 0..iterations {
+        println!("Testing deterministic hashing: iteration {}", i + 1);
+        let byte_stream = bytes_to_stream(bytes.clone());
+        let result = ent.upload(byte_stream).await?;
+
+        assert_eq!(
+            result.metadata_hash, first_metadata_hash,
+            "Metadata hash should be deterministic across multiple entanglements"
+        );
+
+        // Also verify the individual parity hashes remain consistent
+        let metadata = load_metadata(&result.metadata_hash, &storage).await?;
+        let first_metadata = load_metadata(&first_metadata_hash, &storage).await?;
+
+        // Verify lengths match
+        assert_eq!(
+            metadata.parity_hashes.len(),
+            first_metadata.parity_hashes.len(),
+            "Number of parity hashes should be consistent"
+        );
+
+        // Verify each hash and type matches
+        for i in 0..metadata.parity_hashes.len() {
+            assert_eq!(
+                metadata.parity_hashes[i], first_metadata.parity_hashes[i],
+                "Parity hash at index {} should be consistent",
+                i
             );
         }
     }
