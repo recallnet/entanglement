@@ -1250,14 +1250,12 @@ async fn test_deterministic_metadata_hash() -> Result<()> {
         let metadata = load_metadata(&result.metadata_hash, &storage).await?;
         let first_metadata = load_metadata(&first_metadata_hash, &storage).await?;
 
-        // Verify lengths match
         assert_eq!(
             metadata.parity_hashes.len(),
             first_metadata.parity_hashes.len(),
             "Number of parity hashes should be consistent"
         );
 
-        // Verify each hash and type matches
         for i in 0..metadata.parity_hashes.len() {
             assert_eq!(
                 metadata.parity_hashes[i], first_metadata.parity_hashes[i],
