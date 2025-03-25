@@ -325,13 +325,16 @@ impl<T: Storage> Healer<T> {
     fn get_blob_hash_for_type(&self, grid_type: NodeType) -> &str {
         match grid_type {
             NodeType::Data => &self.metadata.orig_hash,
-            NodeType::ParityLeft => self.metadata.parity_hashes.get(&StrandType::Left).unwrap(),
-            NodeType::ParityHorizontal => self
-                .metadata
-                .parity_hashes
-                .get(&StrandType::Horizontal)
-                .unwrap(),
-            NodeType::ParityRight => self.metadata.parity_hashes.get(&StrandType::Right).unwrap(),
+            NodeType::ParityLeft | NodeType::ParityHorizontal | NodeType::ParityRight => {
+                let strand_type = match grid_type {
+                    NodeType::ParityLeft => StrandType::Left,
+                    NodeType::ParityHorizontal => StrandType::Horizontal,
+                    NodeType::ParityRight => StrandType::Right,
+                    _ => unreachable!(),
+                };
+
+                &self.metadata.parity_hashes[strand_type.to_index()]
+            }
         }
     }
 }

@@ -189,13 +189,13 @@ impl<T: Storage> Entangler<T> {
 
         let exec = executer::Executer::new(self.config.alpha);
 
-        let mut parity_hashes = HashMap::new();
+        let mut parity_hashes = Vec::new();
         let mut upload_results = Vec::new();
 
         for parity_grid in exec.iter_parities(orig_grid) {
             let data = parity_grid.grid.assemble_data();
             let upload_result = self.storage.upload_bytes(bytes_to_stream(data)).await?;
-            parity_hashes.insert(parity_grid.strand_type, upload_result.hash.clone());
+            parity_hashes.push(upload_result.hash.clone());
             upload_results.push(upload_result);
         }
 
@@ -614,7 +614,7 @@ mod tests {
         let metadata = Metadata {
             orig_hash: hash.clone(),
             num_bytes: 18,
-            parity_hashes: HashMap::new(),
+            parity_hashes: Vec::new(),
             chunk_size: 6,
             s: 3,
             p: 3,
