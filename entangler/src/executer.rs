@@ -1,7 +1,7 @@
 // Copyright 2024 Entanglement Contributors
 // SPDX-License-Identifier: Apache-2.0, MIT
 
-use crate::grid::{self, Grid, Pos};
+use crate::grid::{self, Grid, Pos, Positioner};
 use crate::parity::{ParityGrid, StrandType};
 use anyhow::Result;
 use bytes::Bytes;
@@ -74,6 +74,7 @@ impl Executer {
             .take(self.alpha as usize)
             .map(move |strand_type| create_parity_grid(&grid, strand_type).unwrap())
     }
+
     /// Entangles the given input stream, producing `alpha` parity streams in parallel.
     /// The parity streams are created according to the strand types.
     pub async fn entangle<S, E>(&self, input_stream: S) -> Result<EntanglementStreamResult, EntanglementError>
@@ -81,12 +82,6 @@ impl Executer {
         S: Stream<Item = Result<Bytes, E>> + Send + Unpin + 'static,
         E: StdError + Send + Sync + 'static,
     {
-        let strand_types = vec![StrandType::Left, StrandType::Horizontal, StrandType::Right];
-        let selected_strands = strand_types.iter()
-            .take(self.alpha as usize)
-            .cloned()
-            .collect::<Vec<_>>();
-
         // Create channels for each parity stream
         let mut receivers = Vec::with_capacity(self.alpha as usize);
         let mut senders = Vec::with_capacity(self.alpha as usize);
@@ -108,7 +103,7 @@ impl Executer {
 
         // Process the input stream in a separate task to avoid blocking
         let leap_window = self.leap_window;
-        let strands_for_processing = selected_strands.clone();
+        let strands_for_processing = StrandType::list(self.alpha as usize).unwrap();
         tokio::spawn(async move {
             if let Err(e) = process_input_stream(input_stream, senders, strands_for_processing, leap_window).await {
                 eprintln!("Error processing input stream: {}", e);
@@ -117,7 +112,7 @@ impl Executer {
 
         Ok(EntanglementStreamResult {
             parity_streams,
-            strand_types: selected_strands,
+            strand_types: StrandType::list(self.alpha as usize).unwrap(),
         })
     }
 }
@@ -304,17 +299,8 @@ where
     Ok(())
 }
 
-/// Entangles two chunks using XOR operation for stream processing
-fn entangle_chunks(chunk1: &Bytes, chunk2: &Bytes) -> Bytes {
-    let mut result = Vec::with_capacity(chunk1.len());
-    for i in 0..chunk1.len() {
-        result.push(chunk1[i] ^ chunk2[i % chunk2.len()]);
-    }
-    Bytes::from(result)
-}
-
 /// For backwards compatibility: entangles two chunks using XOR operation
-fn entangle_grid_chunks(chunk1: &Bytes, chunk2: &Bytes) -> Bytes {
+fn entangle_chunks(chunk1: &Bytes, chunk2: &Bytes) -> Bytes {
     let mut chunk = Vec::with_capacity(chunk1.len());
     for i in 0..chunk1.len() {
         chunk.push(chunk1[i] ^ chunk2[i]);
@@ -332,15 +318,17 @@ fn create_parity_grid(grid: &Grid, strand_type: StrandType) -> Result<ParityGrid
             let pos = Pos::new(x, y);
             if let Some(cell) = grid.try_get_cell(pos) {
                 let next_pos = pos + strand_type;
-                if let Some(pair) = grid.try_get_cell(next_pos) {
-                    parity_grid.set_cell(pos, entangle_grid_chunks(cell, pair));
+
+                if grid.get_positioner().is_pos_available(next_pos) {
+                    let norm_next_pos = grid.get_positioner().normalize(next_pos);
+                    parity_grid.set_cell(pos, entangle_chunks(cell, grid.get_cell(norm_next_pos)));
                 } else {
                     // we need LW size. At the moment we assume it's square with side equal to grid's height
                     let lw_size = grid.get_height();
                     // calculate the number of steps to go along the strand
                     let steps = lw_size - (next_pos.x as u64 % lw_size);
                     let pair = grid.get_cell(next_pos.near(strand_type.into(), steps));
-                    parity_grid.set_cell(pos, entangle_grid_chunks(cell, pair));
+                    parity_grid.set_cell(pos, entangle_chunks(cell, pair));
                 }
             }
         }

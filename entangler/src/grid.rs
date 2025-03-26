@@ -160,8 +160,8 @@ impl Pos {
 ///      the first column.
 #[derive(Debug, Clone, Copy)]
 pub struct Positioner {
-    pub(crate) height: u64,
-    pub(crate) num_items: u64,
+    pub height: u64,
+    pub num_items: u64,
     lw_aligned_width: u64,
 }
 
@@ -201,7 +201,7 @@ impl Positioner {
         Pos::new(index / self.height, index % self.height)
     }
 
-    /// Returns true if the given position is available. Even is a position is normalized it might
+    /// Returns true if the given position is available. Even if the position is normalized it might
     /// be missing from the grid because LW alignment might leave empty spots in the end of the
     /// grid.
     pub fn is_pos_available(&self, pos: Pos) -> bool {

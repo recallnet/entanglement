@@ -52,6 +52,16 @@ impl StrandType {
     pub fn to_opposite_dir(self) -> Dir {
         Dir::from(self).opposite()
     }
+    
+    /// Returns a list of strand types of a given size.
+    pub fn list(size: usize) -> Option<Vec<Self>> {
+        match size {
+            1 => Some(vec![Self::Left]),
+            2 => Some(vec![Self::Left, Self::Horizontal]),
+            3 => Some(vec![Self::Left, Self::Horizontal, Self::Right]),
+            _ => None,
+        }
+    }
 }
 
 impl From<StrandType> for &str {

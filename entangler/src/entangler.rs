@@ -159,21 +159,9 @@ impl<T: Storage> Entangler<T> {
         upload_results.push(orig_upload_result.clone());
 
         // Now entangle the uploaded data
-        let entanglement_result = self.entangle_uploaded(orig_upload_result.hash.clone()).await?;
-        
-        // Extend upload results with parity and metadata results from entanglement
-        for result in entanglement_result.upload_results {
-            // Skip if the hash is the same as orig_upload_result (to avoid duplicates)
-            if result.hash != orig_upload_result.hash {
-                upload_results.push(result);
-            }
-        }
-
-        Ok(EntanglementResult {
-            orig_hash: orig_upload_result.hash,
-            metadata_hash: entanglement_result.metadata_hash,
-            upload_results,
-        })
+        let mut entanglement_result = self.entangle_uploaded(orig_upload_result.hash.clone()).await?;
+        entanglement_result.upload_results.insert(0, orig_upload_result);
+        Ok(entanglement_result)
     }
 
     /// Creates entangled parity blobs for the given data and uploads them to the storage backend.
@@ -482,75 +470,6 @@ where
 fn bytes_to_stream(bytes: Bytes) -> ByteStream {
     Box::pin(futures::stream::once(
         async move { Ok::<Bytes, Error>(bytes) },
-    ))
-}
-
-/// Converts a byte stream to a stream of fixed-size chunks
-/// Each chunk will be exactly chunk_size bytes, with padding added if needed
-fn chunk_bytes_stream<E>(byte_stream: Pin<Box<dyn Stream<Item = Result<Bytes, E>> + Send>>, chunk_size: usize) -> 
-    impl Stream<Item = Result<Bytes, E>> + Send + Unpin + 'static 
-where
-    E: std::error::Error + Send + Sync + 'static
-{
-    let buffer = BytesMut::with_capacity(chunk_size);
-    
-    // Create a stream that processes chunks
-    Box::pin(futures::stream::unfold(
-        (byte_stream, buffer, false), // stream, buffer, is_eof
-        move |(mut stream, mut buffer, mut is_eof)| async move {
-            // If we have a full chunk ready, return it
-            if buffer.len() >= chunk_size {
-                let chunk = buffer.split_to(chunk_size).freeze();
-                return Some((Ok(chunk), (stream, buffer, is_eof)));
-            }
-            
-            // If we've reached EOF and have a partial chunk, pad it and return
-            if is_eof && !buffer.is_empty() {
-                let mut padded_buffer = buffer.clone();
-                padded_buffer.resize(chunk_size, 0);
-                let chunk = padded_buffer.freeze();
-                // Clear the buffer since we're done with it
-                buffer.clear();
-                return Some((Ok(chunk), (stream, buffer, true)));
-            }
-            
-            // If we've reached EOF and have no more data, we're done
-            if is_eof {
-                return None;
-            }
-            
-            // Otherwise, get more data from the stream
-            match stream.next().await {
-                Some(Ok(bytes)) => {
-                    buffer.extend_from_slice(&bytes);
-                    if buffer.len() >= chunk_size {
-                        let chunk = buffer.split_to(chunk_size).freeze();
-                        Some((Ok(chunk), (stream, buffer, is_eof)))
-                    } else {
-                        // Not enough data yet, need more data
-                        // Return None here to continue the unfold
-                        None
-                    }
-                }
-                Some(Err(e)) => {
-                    // Forward errors
-                    Some((Err(e), (stream, buffer, is_eof)))
-                }
-                None => {
-                    // End of stream reached
-                    is_eof = true;
-                    if !buffer.is_empty() {
-                        let mut padded_buffer = buffer.clone();
-                        padded_buffer.resize(chunk_size, 0);
-                        let chunk = padded_buffer.freeze();
-                        buffer.clear();
-                        Some((Ok(chunk), (stream, buffer, true)))
-                    } else {
-                        None
-                    }
-                }
-            }
-        }
     ))
 }
 
