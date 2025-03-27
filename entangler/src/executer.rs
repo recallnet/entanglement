@@ -20,6 +20,7 @@ pub type ByteStream<E> = Pin<Box<dyn Stream<Item = Result<Bytes, E>> + Send + Un
 pub struct Executer {
     alpha: u8,
     leap_window: u64,
+    chunk_size: usize,
 }
 
 /// Result of the entanglement process
@@ -51,15 +52,22 @@ impl Executer {
     /// - alpha: The number of parity streams to create
     /// - leap_window: The size of the leap window, which determines the wrapping behavior
     pub fn new(alpha: u8) -> Self {
-        Self { 
+        Self {
             alpha,
-            leap_window: 1, // Default leap window size, will be updated during entanglement
+            leap_window: 0,
+            chunk_size: 4, // Default to 4-byte chunks
         }
     }
     
     /// Sets the leap window size
     pub fn with_leap_window(mut self, leap_window: u64) -> Self {
         self.leap_window = leap_window;
+        self
+    }
+    
+    /// Sets the chunk size
+    pub fn with_chunk_size(mut self, chunk_size: usize) -> Self {
+        self.chunk_size = chunk_size;
         self
     }
     
@@ -104,13 +112,14 @@ impl Executer {
         // Process the input stream in a separate task to avoid blocking
         let strands_for_processing = StrandType::list(self.alpha as usize).unwrap();
         let column_height = (self.leap_window as f64).sqrt() as u64;
+        let chunk_size = self.chunk_size;
         tokio::spawn(async move {
             if let Err(e) = process_input_stream(
                 input_stream, 
                 senders, 
                 strands_for_processing, 
                 column_height,
-                8, // Default chunk size of 8 bytes
+                chunk_size,
             ).await {
                 eprintln!("Error processing input stream: {}", e);
             }
@@ -135,12 +144,10 @@ where
     S: Stream<Item = Result<Bytes, E>> + Unpin,
     E: StdError + Send + Sync + 'static,
 {
-    // Calculate leap window size based on column height
-    let leap_window = column_height * column_height;
-    
     // Buffer to store chunks for processing
-    let mut chunk_buffer = Vec::with_capacity(leap_window as usize);
+    let mut chunk_buffer = Vec::with_capacity((2 * column_height) as usize);
     let mut current_chunk = Vec::with_capacity(chunk_size);
+    let mut total_columns_processed = 0;
     
     // Read chunks from the input stream
     while let Some(chunk_result) = input.next().await {
@@ -150,172 +157,109 @@ where
                 for byte in data.iter() {
                     current_chunk.push(*byte);
                     
-                    // When we have a complete chunk, add it to the buffer
+                    // When we have a complete chunk
                     if current_chunk.len() == chunk_size {
                         chunk_buffer.push(Bytes::from(current_chunk.clone()));
                         current_chunk.clear();
                         
-                        // Process chunks when we have enough for a column
-                        if chunk_buffer.len() >= column_height as usize {
-                            // Generate and send parity chunks for the current column
-                            for i in 0..column_height as usize {
-                                let mut parity_chunks = Vec::with_capacity(strand_types.len());
-                                
-                                // Calculate parity for each strand type
-                                for strand_type in &strand_types {
-                                    let current_idx = chunk_buffer.len() - column_height as usize + i;
-                                    let prev_idx = match strand_type {
-                                        StrandType::Left => {
-                                            if i == 0 {
-                                                // At top of column, wrap to bottom of previous column
-                                                if current_idx >= column_height as usize {
-                                                    current_idx - 1
-                                                } else {
-                                                    // First column, use self
-                                                    current_idx
-                                                }
-                                            } else {
-                                                // Move up one row
-                                                current_idx - 1
-                                            }
-                                        },
-                                        StrandType::Horizontal => {
-                                            // Use same height in previous column
-                                            if current_idx >= column_height as usize {
-                                                current_idx - column_height as usize
-                                            } else {
-                                                // First column, use self
-                                                current_idx
-                                            }
-                                        },
-                                        StrandType::Right => {
-                                            if i == column_height as usize - 1 {
-                                                // At bottom of column, wrap to top of previous column
-                                                if current_idx >= column_height as usize {
-                                                    current_idx - (column_height as usize - 1)
-                                                } else {
-                                                    // First column, use self
-                                                    current_idx
-                                                }
-                                            } else {
-                                                // Move down one row
-                                                current_idx + 1
-                                            }
-                                        }
-                                    };
-                                    
-                                    // Create parity chunk
-                                    let parity = entangle_chunks(
-                                        &chunk_buffer[prev_idx % chunk_buffer.len()],
-                                        &chunk_buffer[current_idx]
-                                    );
-                                    parity_chunks.push(parity);
-                                }
-                                
-                                // Send parity chunks to their respective channels
-                                for (j, chunk) in parity_chunks.into_iter().enumerate() {
-                                    if j < senders.len() {
-                                        senders[j].send(Ok(chunk))
-                                            .await
-                                            .map_err(|_| EntanglementError::SendError)?;
-                                    }
-                                }
-                            }
-                            
-                            // Remove processed column while keeping necessary history
-                            if chunk_buffer.len() > leap_window as usize {
-                                chunk_buffer.drain(0..column_height as usize);
-                            }
+                        // Process chunks when we have enough for two complete columns
+                        if chunk_buffer.len() >= 2 * column_height as usize {
+                            // Process the first complete column
+                            process_columns(&chunk_buffer[..2 * column_height as usize], &senders, &strand_types, column_height).await?;
+                            // Keep only the last column for next iteration
+                            chunk_buffer.drain(0..column_height as usize);
+                            total_columns_processed += 1;
                         }
                     }
                 }
             },
             Err(e) => {
-                // Convert external error to our error type
                 let error = EntanglementError::InputError(format!("{}", e));
-                
-                // Forward the error to all senders
                 for sender in &senders {
                     sender.send(Err(error.clone()))
                         .await
                         .map_err(|_| EntanglementError::SendError)?;
                 }
-                
                 return Err(error);
             }
         }
     }
     
-    // Process any remaining complete chunks
-    if !current_chunk.is_empty() && current_chunk.len() == chunk_size {
+    // Handle any remaining data in current_chunk
+    if !current_chunk.is_empty() {
+        // Pad the last chunk with zeros to reach chunk_size
+        while current_chunk.len() < chunk_size {
+            current_chunk.push(0);
+        }
         chunk_buffer.push(Bytes::from(current_chunk));
     }
     
-    // Process final chunks if we have enough for at least one more column
-    if chunk_buffer.len() >= column_height as usize {
-        for i in (0..chunk_buffer.len()).step_by(column_height as usize) {
-            if i + column_height as usize > chunk_buffer.len() {
-                break;
-            }
-            
-            for j in 0..column_height as usize {
-                let mut parity_chunks = Vec::with_capacity(strand_types.len());
-                
-                for strand_type in &strand_types {
-                    let current_idx = i + j;
-                    let prev_idx = match strand_type {
-                        StrandType::Left => {
-                            if j == 0 {
-                                if i > 0 {
-                                    i - 1 + column_height as usize - 1
-                                } else {
-                                    current_idx
-                                }
-                            } else {
-                                current_idx - 1
-                            }
-                        },
-                        StrandType::Horizontal => {
-                            if i > 0 {
-                                i - column_height as usize + j
-                            } else {
-                                current_idx
-                            }
-                        },
-                        StrandType::Right => {
-                            if j == column_height as usize - 1 {
-                                if i > 0 {
-                                    i - column_height as usize
-                                } else {
-                                    current_idx
-                                }
-                            } else {
-                                current_idx + 1
-                            }
-                        }
-                    };
-                    
-                    let parity = entangle_chunks(
-                        &chunk_buffer[prev_idx % chunk_buffer.len()],
-                        &chunk_buffer[current_idx]
-                    );
-                    parity_chunks.push(parity);
-                }
-                
-                // Send final parity chunks
-                for (k, chunk) in parity_chunks.into_iter().enumerate() {
-                    if k < senders.len() {
-                        senders[k].send(Ok(chunk))
-                            .await
-                            .map_err(|_| EntanglementError::SendError)?;
-                    }
-                }
-            }
-        }
+    // Process any remaining complete columns
+    if chunk_buffer.len() >= 2 * column_height as usize {
+        process_columns(&chunk_buffer[..2 * column_height as usize], &senders, &strand_types, column_height).await?;
+        total_columns_processed += 1;
+    }
+    
+    // If we have a remaining column that hasn't been processed and we haven't processed all columns
+    if chunk_buffer.len() >= column_height as usize && total_columns_processed < chunk_buffer.len() / column_height as usize {
+        let mut final_buffer = Vec::with_capacity(2 * column_height as usize);
+        final_buffer.extend_from_slice(&chunk_buffer[..column_height as usize]);
+        final_buffer.extend_from_slice(&chunk_buffer[..column_height as usize]);
+        process_columns(&final_buffer, &senders, &strand_types, column_height).await?;
     }
     
     // Close the channels by dropping the senders
     drop(senders);
+    
+    Ok(())
+}
+
+async fn process_columns(
+    chunk_buffer: &[Bytes],
+    senders: &[mpsc::Sender<Result<Bytes, EntanglementError>>],
+    strand_types: &[StrandType],
+    column_height: u64,
+) -> Result<(), EntanglementError> {
+    let column_start = chunk_buffer.len() - 2 * column_height as usize;
+    
+    // For each position in the first column
+    for y in 0..column_height as usize {
+        let mut parity_chunks = Vec::with_capacity(strand_types.len());
+        let current_idx = column_start + y;
+        
+        // Calculate parity for each strand type
+        for strand_type in strand_types {
+            let next_y = match strand_type {
+                StrandType::Left => {
+                    if y == 0 {
+                        column_height as usize - 1
+                    } else {
+                        y - 1
+                    }
+                },
+                StrandType::Horizontal => y,
+                StrandType::Right => {
+                    (y + 1) % column_height as usize
+                }
+            };
+            
+            let next_idx = column_start + column_height as usize + next_y;
+            let parity = entangle_chunks(
+                &chunk_buffer[current_idx],
+                &chunk_buffer[next_idx]
+            );
+            parity_chunks.push(parity);
+        }
+        
+        // Send parity chunks to their respective channels
+        for (j, chunk) in parity_chunks.into_iter().enumerate() {
+            if j < senders.len() {
+                senders[j].send(Ok(chunk))
+                    .await
+                    .map_err(|_| EntanglementError::SendError)?;
+            }
+        }
+    }
     
     Ok(())
 }
@@ -769,21 +713,24 @@ mod tests {
 
     #[tokio::test]
     async fn test_entangle_fixed_size_chunks() {
-        // Create input stream with 2-byte data pieces to test chunk assembly
+        // Create input stream with 8-byte chunks
+        // We'll create a 2x3 grid (column_height = 3) to test wrapping
         let input_data = vec![
-            vec![1, 2],
-            vec![3, 4],
-            vec![5, 6],
-            vec![7, 8],
-            vec![9, 10],
-            vec![11, 12],
-            vec![13, 14],
-            vec![15, 16],
+            // First column (x=0)
+            vec![1, 1, 1, 1, 1, 1, 1, 1],  // y=0
+            vec![2, 2, 2, 2, 2, 2, 2, 2],  // y=1
+            vec![3, 3, 3, 3, 3, 3, 3, 3],  // y=2
+            // Second column (x=1)
+            vec![4, 4, 4, 4, 4, 4, 4, 4],  // y=0
+            vec![5, 5, 5, 5, 5, 5, 5, 5],  // y=1
+            vec![6, 6, 6, 6, 6, 6, 6, 6],  // y=2
         ];
         let input_stream = stream::iter(input_data.into_iter().map(|chunk| Ok::<_, std::io::Error>(Bytes::from(chunk))));
         
-        // Create executer with alpha=3 and leap_window=4 (2x2 grid)
-        let executer = Executer::new(3).with_leap_window(4);
+        // Create executer with alpha=3, leap_window=9 (3x3 grid), and 8-byte chunks
+        let executer = Executer::new(3)
+            .with_leap_window(9)
+            .with_chunk_size(8);
         
         // Entangle the stream
         let result = executer.entangle(input_stream).await.unwrap();
@@ -805,36 +752,44 @@ mod tests {
             parity_results.push(chunks);
         }
         
-        // Verify each parity stream has the correct number of chunks and content
-        for (i, chunks) in parity_results.iter().enumerate() {
-            assert_eq!(chunks.len(), 2, "Parity stream {} should have 2 chunks (one per column)", i);
-            
-            // Each chunk should be 8 bytes (default chunk size)
-            for chunk in chunks {
-                assert_eq!(chunk.len(), 8, "Each chunk should be 8 bytes");
-            }
-            
-            // For the first column:
-            // Left strand: chunk[0] XOR chunk[7]
-            // Horizontal: chunk[0] XOR chunk[4]
-            // Right strand: chunk[0] XOR chunk[1]
-            let expected_first_chunk = match i {
-                0 => entangle_chunks(
-                    &Bytes::from(vec![1, 2, 3, 4, 5, 6, 7, 8]),
-                    &Bytes::from(vec![15, 16, 13, 14, 15, 16, 13, 14])
-                ),
-                1 => entangle_chunks(
-                    &Bytes::from(vec![1, 2, 3, 4, 5, 6, 7, 8]),
-                    &Bytes::from(vec![9, 10, 11, 12, 13, 14, 15, 16])
-                ),
-                2 => entangle_chunks(
-                    &Bytes::from(vec![1, 2, 3, 4, 5, 6, 7, 8]),
-                    &Bytes::from(vec![3, 4, 5, 6, 7, 8, 9, 10])
-                ),
-                _ => unreachable!(),
-            };
-            assert_eq!(chunks[0], expected_first_chunk.to_vec(), "First chunk mismatch for strand {}", i);
+        // Verify each parity stream has the correct number of chunks
+        for chunks in &parity_results {
+            assert_eq!(chunks.len(), 3, "Each parity stream should have 3 chunks (one per row)");
         }
+        
+        // Helper function to create expected chunk
+        let create_expected = |v1: u8, v2: u8| -> Vec<u8> {
+            let chunk1 = vec![v1; 8];
+            let chunk2 = vec![v2; 8];
+            entangle_chunks(&Bytes::from(chunk1), &Bytes::from(chunk2)).to_vec()
+        };
+        
+        // Verify Left strand (moves right and up, wraps at top)
+        // (0,0) entangles with (1,2)
+        // (0,1) entangles with (1,0)
+        // (0,2) entangles with (1,1)
+        let left_chunks = &parity_results[0];
+        assert_eq!(left_chunks[0], create_expected(1, 6), "Left strand (0,0) -> (1,2)");
+        assert_eq!(left_chunks[1], create_expected(2, 4), "Left strand (0,1) -> (1,0)");
+        assert_eq!(left_chunks[2], create_expected(3, 5), "Left strand (0,2) -> (1,1)");
+        
+        // Verify Horizontal strand (moves right only)
+        // (0,0) entangles with (1,0)
+        // (0,1) entangles with (1,1)
+        // (0,2) entangles with (1,2)
+        let horizontal_chunks = &parity_results[1];
+        assert_eq!(horizontal_chunks[0], create_expected(1, 4), "Horizontal strand (0,0) -> (1,0)");
+        assert_eq!(horizontal_chunks[1], create_expected(2, 5), "Horizontal strand (0,1) -> (1,1)");
+        assert_eq!(horizontal_chunks[2], create_expected(3, 6), "Horizontal strand (0,2) -> (1,2)");
+        
+        // Verify Right strand (moves right and down, wraps at bottom)
+        // (0,0) entangles with (1,1)
+        // (0,1) entangles with (1,2)
+        // (0,2) entangles with (1,0)
+        let right_chunks = &parity_results[2];
+        assert_eq!(right_chunks[0], create_expected(1, 5), "Right strand (0,0) -> (1,1)");
+        assert_eq!(right_chunks[1], create_expected(2, 6), "Right strand (0,1) -> (1,2)");
+        assert_eq!(right_chunks[2], create_expected(3, 4), "Right strand (0,2) -> (1,0)");
     }
 
     #[tokio::test]
@@ -849,8 +804,10 @@ mod tests {
         ];
         let input_stream = stream::iter(input_data.into_iter().map(|chunk| Ok::<_, std::io::Error>(Bytes::from(chunk))));
         
-        // Create executer with alpha=2 and leap_window=4 (2x2 grid)
-        let executer = Executer::new(2).with_leap_window(4);
+        // Create executer with alpha=2, leap_window=4 (2x2 grid), and 8-byte chunks
+        let executer = Executer::new(2)
+            .with_leap_window(4)
+            .with_chunk_size(8);
         
         // Entangle the stream
         let result = executer.entangle(input_stream).await.unwrap();
