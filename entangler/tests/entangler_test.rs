@@ -142,7 +142,7 @@ async fn test_upload_bytes_to_iroh() -> Result<()> {
         let parity_hash_str = &metadata.parity_hashes[index];
         let strand_type = StrandType::try_from_index(index).unwrap();
         let parity_hash = iroh_blobs::Hash::from_str(parity_hash_str)?;
-        let parity = node.blobs().read_to_bytes(parity_hash).await?;
+        let parity = blobs.client().read_to_bytes(parity_hash).await?;
         let mut expected_parity =
             BytesMut::with_capacity(NUM_CHUNKS as usize * CHUNK_SIZE as usize);
         for i in 0..NUM_CHUNKS as usize {
