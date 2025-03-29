@@ -19,14 +19,14 @@ async-trait = "0.1.80"
 bytes = "1.6.0"
 cid = { version = "0.10.1", default-features = false, features = [
     "serde-codec",
-    "std",
+    "std"
 ] }
 clap = { version = "4.1.14", features = [
     "color",
     "derive",
     "env",
     "string",
-    "unicode",
+    "unicode"
 ] }
 clap-stdin = { version = "0.6.0", features = ["tokio"] }
 iroh = "0.28.1"
