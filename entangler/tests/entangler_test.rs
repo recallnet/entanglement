@@ -44,7 +44,7 @@ fn xor_chunks(chunk1: &[u8], chunk2: &[u8]) -> Bytes {
 fn new_entangler_from_client(
     client: &BlobsClient,
 ) -> Result<Entangler<recall_entangler_storage::iroh::IrohStorage>, recall_entangler::Error> {
-    let st = recall_entangler_storage::iroh::IrohStorage::from_client(client.clone());
+    let st = recall_entangler_storage::iroh::IrohStorage::from_client(client.boxed());
     Entangler::new(st, Config::new(3, HEIGHT as u8, HEIGHT as u8))
 }
 

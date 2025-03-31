@@ -9,7 +9,7 @@ use futures_lite::{Stream, StreamExt};
 use iroh::protocol::Router;
 use iroh::Endpoint;
 use iroh_blobs::net_protocol::Blobs;
-use iroh_blobs::rpc::client::blobs::{MemClient, ReadAtLen};
+use iroh_blobs::rpc::client::blobs::{Client as BlobsClient, MemClient, ReadAtLen};
 use iroh_blobs::util::SetTagOption;
 use iroh_blobs::{Hash, Tag};
 use std::{path::Path, str::FromStr};
@@ -29,8 +29,14 @@ const CHUNK_SIZE: u64 = 1024;
 /// blob that iroh assigned to the blob with `SetTagOption::Auto`.
 #[derive(Debug, Clone)]
 pub enum IrohStorage {
-    Full { router: Router, blobs: BlobsWrapper },
-    Client { blobs_client: MemClient },
+    Full {
+        router: Router,
+        blobs: BlobsWrapper,
+        client: BlobsClient,
+    },
+    Client {
+        blobs_client: BlobsClient,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -49,7 +55,7 @@ impl BlobsWrapper {
 }
 
 impl IrohStorage {
-    pub fn from_client(blobs_client: MemClient) -> Self {
+    pub fn from_client(blobs_client: BlobsClient) -> Self {
         Self::Client { blobs_client }
     }
 
@@ -61,9 +67,12 @@ impl IrohStorage {
             .spawn()
             .await?;
 
+        let client = blobs.client().boxed();
+
         Ok(Self::Full {
             router,
             blobs: BlobsWrapper::Mem(blobs),
+            client,
         })
     }
 
@@ -75,15 +84,18 @@ impl IrohStorage {
             .spawn()
             .await?;
 
+        let client = blobs.client().boxed();
+
         Ok(Self::Full {
             router,
             blobs: BlobsWrapper::Fs(blobs),
+            client,
         })
     }
 
-    pub fn blobs_client(&self) -> &MemClient {
+    pub fn blobs_client(&self) -> &BlobsClient {
         match self {
-            Self::Full { blobs, .. } => blobs.client(),
+            Self::Full { ref client, .. } => client,
             Self::Client { blobs_client } => blobs_client,
         }
     }

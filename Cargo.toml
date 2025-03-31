@@ -39,3 +39,6 @@ stderrlog = "0.6.0"
 thiserror = "2.0.4"
 tokio = { version = "1.37.0", features = ["fs", "macros", "rt-multi-thread"] }
 uuid = { version = "1.15.1", features = ["v4" ] }
+
+[patch.crates-io]
+iroh-blobs = { git = "https://github.com/n0-computer/iroh-blobs", branch = "allow-boxed-client" }
