@@ -36,13 +36,13 @@ pub struct EntanglementStreamResult {
 pub enum EntanglementError {
     #[error("Failed to send chunk to channel")]
     SendError,
-    
+
     #[error("Input stream error: {0}")]
     InputError(String),
-    
+
     #[error("Task join error")]
     TaskJoinError,
-    
+
     #[error("Storage error: {0}")]
     StorageError(String),
 }
@@ -58,24 +58,27 @@ impl Executer {
             chunk_size: 4, // Default to 4-byte chunks
         }
     }
-    
+
     /// Sets the leap window size
     pub fn with_leap_window(mut self, leap_window: u64) -> Self {
         self.leap_window = leap_window;
         self
     }
-    
+
     /// Sets the chunk size
     pub fn with_chunk_size(mut self, chunk_size: usize) -> Self {
         self.chunk_size = chunk_size;
         self
     }
-    
+
     /// Executes the entanglement process on the given grid.
     /// It produces `alpha` parity grids one by one.
-    /// 
+    ///
     /// Note: This method is preserved for compatibility with the existing code.
-    pub fn iter_parities(&self, grid: crate::grid::Grid) -> impl Iterator<Item = crate::parity::ParityGrid> {
+    pub fn iter_parities(
+        &self,
+        grid: crate::grid::Grid,
+    ) -> impl Iterator<Item = crate::parity::ParityGrid> {
         let strand_types = vec![StrandType::Left, StrandType::Horizontal, StrandType::Right];
         strand_types
             .into_iter()
@@ -85,7 +88,10 @@ impl Executer {
 
     /// Entangles the given input stream, producing `alpha` parity streams in parallel.
     /// The parity streams are created according to the strand types.
-    pub async fn entangle<S, E>(&self, input_stream: S) -> Result<EntanglementStreamResult, EntanglementError>
+    pub async fn entangle<S, E>(
+        &self,
+        input_stream: S,
+    ) -> Result<EntanglementStreamResult, EntanglementError>
     where
         S: Stream<Item = Result<Bytes, E>> + Send + Unpin + 'static,
         E: StdError + Send + Sync + 'static,
@@ -115,12 +121,14 @@ impl Executer {
         let chunk_size = self.chunk_size;
         tokio::spawn(async move {
             if let Err(e) = process_input_stream(
-                input_stream, 
-                senders, 
-                strands_for_processing, 
+                input_stream,
+                senders,
+                strands_for_processing,
                 column_height,
                 chunk_size,
-            ).await {
+            )
+            .await
+            {
                 eprintln!("Error processing input stream: {}", e);
             }
         });
@@ -149,7 +157,7 @@ where
     let mut current_chunk = Vec::with_capacity(chunk_size);
     let mut first_column: Option<Vec<Bytes>> = None;
     let mut total_columns_processed = 0;
-    
+
     // Read chunks from the input stream
     while let Some(chunk_result) = input.next().await {
         match chunk_result {
@@ -157,32 +165,39 @@ where
                 // Process incoming data byte by byte
                 for byte in data.iter() {
                     current_chunk.push(*byte);
-                    
+
                     // When we have a complete chunk
                     if current_chunk.len() == chunk_size {
                         chunk_buffer.push(Bytes::from(current_chunk.clone()));
                         current_chunk.clear();
-                        
+
                         // Store first column when we have enough chunks
                         if first_column.is_none() && chunk_buffer.len() >= column_height as usize {
                             first_column = Some(chunk_buffer[..column_height as usize].to_vec());
                         }
-                        
+
                         // Process chunks when we have enough for two complete columns
                         if chunk_buffer.len() >= 2 * column_height as usize {
                             // Process the first complete column
-                            process_columns(&chunk_buffer[..2 * column_height as usize], &senders, &strand_types, column_height).await?;
+                            process_columns(
+                                &chunk_buffer[..2 * column_height as usize],
+                                &senders,
+                                &strand_types,
+                                column_height,
+                            )
+                            .await?;
                             // Keep only the last column for next iteration
                             chunk_buffer.drain(0..column_height as usize);
                             total_columns_processed += 1;
                         }
                     }
                 }
-            },
+            }
             Err(e) => {
                 let error = EntanglementError::InputError(format!("{}", e));
                 for sender in &senders {
-                    sender.send(Err(error.clone()))
+                    sender
+                        .send(Err(error.clone()))
                         .await
                         .map_err(|_| EntanglementError::SendError)?;
                 }
@@ -190,7 +205,7 @@ where
             }
         }
     }
-    
+
     // Handle any remaining data in current_chunk
     if !current_chunk.is_empty() {
         // Pad the last chunk with zeros to reach chunk_size
@@ -199,32 +214,61 @@ where
         }
         chunk_buffer.push(Bytes::from(current_chunk));
     }
-    
+
     // Process any remaining complete columns
     if chunk_buffer.len() >= 2 * column_height as usize {
-        process_columns(&chunk_buffer[..2 * column_height as usize], &senders, &strand_types, column_height).await?;
+        process_columns(
+            &chunk_buffer[..2 * column_height as usize],
+            &senders,
+            &strand_types,
+            column_height,
+        )
+        .await?;
+        chunk_buffer.drain(0..column_height as usize);
         total_columns_processed += 1;
     }
-    
-    // If we have a remaining column that hasn't been processed
-    if chunk_buffer.len() >= column_height as usize {
-        let mut final_buffer = Vec::with_capacity(2 * column_height as usize);
-        final_buffer.extend_from_slice(&chunk_buffer[..column_height as usize]);
-        
-        // Use the first column for entanglement if available, otherwise duplicate the last column
-        if let Some(first_col) = first_column {
-            final_buffer.extend_from_slice(&first_col);
+
+    for (i, chunk) in chunk_buffer.iter().enumerate() {
+        // next x within the current leap window
+        let next_x = (total_columns_processed + 1) % column_height;
+
+        for (j, &strand_type) in strand_types.iter().enumerate() {
+            let next_y = mod_int((i as i64) + strand_type.to_i64(), column_height);
+            let next_index = next_x * column_height + next_y;
+            // if next_x is 0, we should entangle with the first column (else branch)
+            // otherwise if the next chunk for the current chunk is within the buffer, we entangle with it
+            let next_chunk = if next_x != 0 && next_index < chunk_buffer.len() as u64 {
+                &chunk_buffer[next_index as usize]
         } else {
-            final_buffer.extend_from_slice(&chunk_buffer[..column_height as usize]);
+                let steps = column_height - next_x;
+                let next_y = mod_int(
+                    (next_y as i64) + strand_type.to_i64() * (steps as i64),
+                    column_height,
+                );
+                &first_column.as_ref().unwrap()[next_y as usize]
+            };
+
+            let parity = entangle_chunks(chunk, next_chunk);
+            senders[j]
+                .send(Ok(parity))
+                .await
+                .map_err(|_| EntanglementError::SendError)?;
         }
-        
-        process_columns(&final_buffer, &senders, &strand_types, column_height).await?;
+
+        if i == column_height as usize - 1 {
+            total_columns_processed += 1;
+        }
     }
-    
+
     // Close the channels by dropping the senders
     drop(senders);
-    
+
     Ok(())
+}
+
+fn mod_int(int: i64, m: u64) -> u64 {
+    let w = m as i64;
+    ((int % w + w) % w) as u64
 }
 
 async fn process_columns(
@@ -234,12 +278,12 @@ async fn process_columns(
     column_height: u64,
 ) -> Result<(), EntanglementError> {
     let column_start = chunk_buffer.len() - 2 * column_height as usize;
-    
+
     // For each position in the first column
     for y in 0..column_height as usize {
         let mut parity_chunks = Vec::with_capacity(strand_types.len());
         let current_idx = column_start + y;
-        
+
         // Calculate parity for each strand type
         for strand_type in strand_types {
             let next_y = match strand_type {
@@ -249,31 +293,27 @@ async fn process_columns(
                     } else {
                         y - 1
                     }
-                },
-                StrandType::Horizontal => y,
-                StrandType::Right => {
-                    (y + 1) % column_height as usize
                 }
+                StrandType::Horizontal => y,
+                StrandType::Right => (y + 1) % column_height as usize,
             };
-            
+
             let next_idx = column_start + column_height as usize + next_y;
-            let parity = entangle_chunks(
-                &chunk_buffer[current_idx],
-                &chunk_buffer[next_idx]
-            );
+            let parity = entangle_chunks(&chunk_buffer[current_idx], &chunk_buffer[next_idx]);
             parity_chunks.push(parity);
         }
-        
+
         // Send parity chunks to their respective channels
         for (j, chunk) in parity_chunks.into_iter().enumerate() {
             if j < senders.len() {
-                senders[j].send(Ok(chunk))
+                senders[j]
+                    .send(Ok(chunk))
                     .await
                     .map_err(|_| EntanglementError::SendError)?;
             }
         }
     }
-    
+
     Ok(())
 }
 
@@ -334,20 +374,20 @@ mod tests {
         let chunk1 = vec![1, 2, 3, 4];
         let chunk2 = vec![5, 6, 7, 8];
         let input_stream = create_test_stream(vec![chunk1.clone(), chunk2.clone()]);
-        
+
         // Create an executer with alpha=3 (all strand types)
         let executer = Executer::new(3).with_leap_window(1);
-        
+
         // Entangle the stream
         let result = executer.entangle(input_stream).await.unwrap();
-        
+
         // Verify we got 3 parity streams (Left, Horizontal, Right)
         assert_eq!(result.parity_streams.len(), 3);
         assert_eq!(result.strand_types.len(), 3);
         assert_eq!(result.strand_types[0], StrandType::Left);
         assert_eq!(result.strand_types[1], StrandType::Horizontal);
         assert_eq!(result.strand_types[2], StrandType::Right);
-        
+
         // Collect from each parity stream to verify contents
         let mut parity_results = Vec::new();
         for (i, mut stream) in result.parity_streams.into_iter().enumerate() {
@@ -359,7 +399,7 @@ mod tests {
             assert!(!chunks.is_empty(), "Parity stream {} should have chunks", i);
             parity_results.push(chunks);
         }
-        
+
         // Each parity stream has its own generation function, so we just verify they exist
         // and have valid data (non-empty and right size)
         for (i, chunks) in parity_results.iter().enumerate() {
@@ -375,30 +415,33 @@ mod tests {
         let error_stream = stream::iter(vec![
             Ok(Bytes::from(vec![1, 2, 3, 4])),
             Ok(Bytes::from(vec![5, 6, 7, 8])),
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "test error"))
+            Err(std::io::Error::new(std::io::ErrorKind::Other, "test error")),
         ]);
-        
+
         // Create an executer
         let executer = Executer::new(1).with_leap_window(1);
-        
+
         // Entangle the stream
         let result = executer.entangle(error_stream).await.unwrap();
-        
+
         // Verify we got 1 parity stream
         assert_eq!(result.parity_streams.len(), 1);
-        
+
         // Collect from the parity stream to verify we get the error
         let mut stream = result.parity_streams.into_iter().next().unwrap();
         let mut error_received = false;
-        
+
         while let Some(result) = stream.next().await {
             if result.is_err() {
                 error_received = true;
                 break;
             }
         }
-        
-        assert!(error_received, "Should have received error from parity stream");
+
+        assert!(
+            error_received,
+            "Should have received error from parity stream"
+        );
     }
 
     #[tokio::test]
@@ -412,30 +455,33 @@ mod tests {
             vec![17, 18, 19, 20],
         ];
         let input_stream = create_test_stream(chunks.clone());
-        
+
         // Create an executer with just one strand type for simplicity
         let executer = Executer::new(1).with_leap_window(2);
-        
+
         // Entangle the stream
         let result = executer.entangle(input_stream).await.unwrap();
-        
+
         // Verify we got 1 parity stream
         assert_eq!(result.parity_streams.len(), 1);
-        
+
         // Collect from the parity stream
         let mut stream = result.parity_streams.into_iter().next().unwrap();
         let mut parity_chunks = Vec::new();
-        
+
         while let Some(result) = stream.next().await {
             parity_chunks.push(result.unwrap().to_vec());
         }
-        
+
         // We should get at least chunks.len() - 1 parity chunks
-        assert!(parity_chunks.len() >= chunks.len() - 1, 
-            "Expected at least {} parity chunks but got {}", 
-            chunks.len() - 1, parity_chunks.len());
+        assert!(
+            parity_chunks.len() >= chunks.len() - 1,
+            "Expected at least {} parity chunks but got {}",
+            chunks.len() - 1,
+            parity_chunks.len()
+        );
     }
-    
+
     use crate::grid::Grid;
     use bytes::Bytes;
     use std::str;
@@ -730,47 +776,49 @@ mod tests {
         // We'll create a 3x6 grid (column_height = 3) to test donut-shaped wrapping
         let input_data = vec![
             // First column (x=0)
-            vec![1, 1, 1, 1, 1, 1, 1, 1],  // y=0
-            vec![2, 2, 2, 2, 2, 2, 2, 2],  // y=1
-            vec![3, 3, 3, 3, 3, 3, 3, 3],  // y=2
+            vec![1, 1, 1, 1, 1, 1, 1, 1], // y=0
+            vec![2, 2, 2, 2, 2, 2, 2, 2], // y=1
+            vec![3, 3, 3, 3, 3, 3, 3, 3], // y=2
             // Second column (x=1)
-            vec![4, 4, 4, 4, 4, 4, 4, 4],  // y=0
-            vec![5, 5, 5, 5, 5, 5, 5, 5],  // y=1
-            vec![6, 6, 6, 6, 6, 6, 6, 6],  // y=2
+            vec![4, 4, 4, 4, 4, 4, 4, 4], // y=0
+            vec![5, 5, 5, 5, 5, 5, 5, 5], // y=1
+            vec![6, 6, 6, 6, 6, 6, 6, 6], // y=2
             // Third column (x=2)
-            vec![7, 7, 7, 7, 7, 7, 7, 7],  // y=0
-            vec![8, 8, 8, 8, 8, 8, 8, 8],  // y=1
-            vec![9, 9, 9, 9, 9, 9, 9, 9],  // y=2
+            vec![7, 7, 7, 7, 7, 7, 7, 7], // y=0
+            vec![8, 8, 8, 8, 8, 8, 8, 8], // y=1
+            vec![9, 9, 9, 9, 9, 9, 9, 9], // y=2
             // Fourth column (x=3)
-            vec![10, 10, 10, 10, 10, 10, 10, 10],  // y=0
-            vec![11, 11, 11, 11, 11, 11, 11, 11],  // y=1
-            vec![12, 12, 12, 12, 12, 12, 12, 12],  // y=2
+            vec![10, 10, 10, 10, 10, 10, 10, 10], // y=0
+            vec![11, 11, 11, 11, 11, 11, 11, 11], // y=1
+            vec![12, 12, 12, 12, 12, 12, 12, 12], // y=2
             // Fifth column (x=4)
-            vec![13, 13, 13, 13, 13, 13, 13, 13],  // y=0
-            vec![14, 14, 14, 14, 14, 14, 14, 14],  // y=1
-            vec![15, 15, 15, 15, 15, 15, 15, 15],  // y=2
+            vec![13, 13, 13, 13, 13, 13, 13, 13], // y=0
+            vec![14, 14, 14, 14, 14, 14, 14, 14], // y=1
+            vec![15, 15, 15, 15, 15, 15, 15, 15], // y=2
             // Sixth column (x=5)
-            vec![16, 16, 16, 16, 16, 16, 16, 16],  // y=0
-            vec![17, 17, 17, 17, 17, 17, 17, 17],  // y=1
-            vec![18, 18, 18, 18, 18, 18, 18, 18],  // y=2
+            vec![16, 16, 16, 16, 16, 16, 16, 16], // y=0
+            vec![17, 17, 17, 17, 17, 17, 17, 17], // y=1
+            vec![18, 18, 18, 18, 18, 18, 18, 18], // y=2
         ];
-        let input_stream = stream::iter(input_data.into_iter().map(|chunk| Ok::<_, std::io::Error>(Bytes::from(chunk))));
-        
+        let input_stream = stream::iter(
+            input_data
+                .into_iter()
+                .map(|chunk| Ok::<_, std::io::Error>(Bytes::from(chunk))),
+        );
+
         // Create executer with alpha=3, leap_window=9 (3x3 grid), and 8-byte chunks
-        let executer = Executer::new(3)
-            .with_leap_window(9)
-            .with_chunk_size(8);
-        
+        let executer = Executer::new(3).with_leap_window(9).with_chunk_size(8);
+
         // Entangle the stream
         let result = executer.entangle(input_stream).await.unwrap();
-        
+
         // Verify we got 3 parity streams
         assert_eq!(result.parity_streams.len(), 3);
         assert_eq!(result.strand_types.len(), 3);
         assert_eq!(result.strand_types[0], StrandType::Left);
         assert_eq!(result.strand_types[1], StrandType::Horizontal);
         assert_eq!(result.strand_types[2], StrandType::Right);
-        
+
         // Collect results from each parity stream
         let mut parity_results = Vec::new();
         for mut stream in result.parity_streams {
@@ -780,74 +828,148 @@ mod tests {
             }
             parity_results.push(chunks);
         }
-        
+
         // Helper function to create expected chunk
         let create_expected = |v1: u8, v2: u8| -> Vec<u8> {
             let chunk1 = vec![v1; 8];
             let chunk2 = vec![v2; 8];
             entangle_chunks(&Bytes::from(chunk1), &Bytes::from(chunk2)).to_vec()
         };
-        
+
         // Verify Left strand (moves right and up, wraps at top)
         let left_chunks = &parity_results[0];
         // First column entangles with second column
-        assert_eq!(left_chunks[0], create_expected(1, 6), "Left strand (0,0) -> (1,2)");
-        assert_eq!(left_chunks[1], create_expected(2, 4), "Left strand (0,1) -> (1,0)");
-        assert_eq!(left_chunks[2], create_expected(3, 5), "Left strand (0,2) -> (1,1)");
+        assert_eq!(
+            left_chunks[0],
+            create_expected(1, 6),
+            "Left strand (0,0) -> (1,2)"
+        );
+        assert_eq!(
+            left_chunks[1],
+            create_expected(2, 4),
+            "Left strand (0,1) -> (1,0)"
+        );
+        assert_eq!(
+            left_chunks[2],
+            create_expected(3, 5),
+            "Left strand (0,2) -> (1,1)"
+        );
         // Last column entangles with first column
-        assert_eq!(left_chunks[15], create_expected(16, 3), "Left strand (5,0) -> (0,2)");
-        assert_eq!(left_chunks[16], create_expected(17, 1), "Left strand (5,1) -> (0,0)");
-        assert_eq!(left_chunks[17], create_expected(18, 2), "Left strand (5,2) -> (0,1)");
-        
+        assert_eq!(
+            left_chunks[15],
+            create_expected(16, 3),
+            "Left strand (5,0) -> (0,2)"
+        );
+        assert_eq!(
+            left_chunks[16],
+            create_expected(17, 1),
+            "Left strand (5,1) -> (0,0)"
+        );
+        assert_eq!(
+            left_chunks[17],
+            create_expected(18, 2),
+            "Left strand (5,2) -> (0,1)"
+        );
+
         // Verify Horizontal strand (moves right only)
         let horizontal_chunks = &parity_results[1];
         // First column entangles with second column
-        assert_eq!(horizontal_chunks[0], create_expected(1, 4), "Horizontal strand (0,0) -> (1,0)");
-        assert_eq!(horizontal_chunks[1], create_expected(2, 5), "Horizontal strand (0,1) -> (1,1)");
-        assert_eq!(horizontal_chunks[2], create_expected(3, 6), "Horizontal strand (0,2) -> (1,2)");
+        assert_eq!(
+            horizontal_chunks[0],
+            create_expected(1, 4),
+            "Horizontal strand (0,0) -> (1,0)"
+        );
+        assert_eq!(
+            horizontal_chunks[1],
+            create_expected(2, 5),
+            "Horizontal strand (0,1) -> (1,1)"
+        );
+        assert_eq!(
+            horizontal_chunks[2],
+            create_expected(3, 6),
+            "Horizontal strand (0,2) -> (1,2)"
+        );
         // Last column entangles with first column
-        assert_eq!(horizontal_chunks[15], create_expected(16, 1), "Horizontal strand (5,0) -> (0,0)");
-        assert_eq!(horizontal_chunks[16], create_expected(17, 2), "Horizontal strand (5,1) -> (0,1)");
-        assert_eq!(horizontal_chunks[17], create_expected(18, 3), "Horizontal strand (5,2) -> (0,2)");
-        
+        assert_eq!(
+            horizontal_chunks[15],
+            create_expected(16, 1),
+            "Horizontal strand (5,0) -> (0,0)"
+        );
+        assert_eq!(
+            horizontal_chunks[16],
+            create_expected(17, 2),
+            "Horizontal strand (5,1) -> (0,1)"
+        );
+        assert_eq!(
+            horizontal_chunks[17],
+            create_expected(18, 3),
+            "Horizontal strand (5,2) -> (0,2)"
+        );
+
         // Verify Right strand (moves right and down, wraps at bottom)
         let right_chunks = &parity_results[2];
         // First column entangles with second column
-        assert_eq!(right_chunks[0], create_expected(1, 5), "Right strand (0,0) -> (1,1)");
-        assert_eq!(right_chunks[1], create_expected(2, 6), "Right strand (0,1) -> (1,2)");
-        assert_eq!(right_chunks[2], create_expected(3, 4), "Right strand (0,2) -> (1,0)");
+        assert_eq!(
+            right_chunks[0],
+            create_expected(1, 5),
+            "Right strand (0,0) -> (1,1)"
+        );
+        assert_eq!(
+            right_chunks[1],
+            create_expected(2, 6),
+            "Right strand (0,1) -> (1,2)"
+        );
+        assert_eq!(
+            right_chunks[2],
+            create_expected(3, 4),
+            "Right strand (0,2) -> (1,0)"
+        );
         // Last column entangles with first column
-        assert_eq!(right_chunks[15], create_expected(16, 2), "Right strand (5,0) -> (0,1)");
-        assert_eq!(right_chunks[16], create_expected(17, 3), "Right strand (5,1) -> (0,2)");
-        assert_eq!(right_chunks[17], create_expected(18, 1), "Right strand (5,2) -> (0,0)");
+        assert_eq!(
+            right_chunks[15],
+            create_expected(16, 2),
+            "Right strand (5,0) -> (0,1)"
+        );
+        assert_eq!(
+            right_chunks[16],
+            create_expected(17, 3),
+            "Right strand (5,1) -> (0,2)"
+        );
+        assert_eq!(
+            right_chunks[17],
+            create_expected(18, 1),
+            "Right strand (5,2) -> (0,0)"
+        );
     }
 
     #[tokio::test]
     async fn test_entangle_with_partial_chunks() {
         // Create input data that doesn't align with chunk size
         let input_data = vec![
-            vec![1, 2, 3],         // 3 bytes
-            vec![4, 5, 6, 7],      // 4 bytes
-            vec![8, 9],            // 2 bytes
-            vec![10, 11, 12, 13],  // 4 bytes
-            vec![14, 15, 16],      // 3 bytes - this ensures we have enough data for a complete column
+            vec![1, 2, 3],        // 3 bytes
+            vec![4, 5, 6, 7],     // 4 bytes
+            vec![8, 9],           // 2 bytes
+            vec![10, 11, 12, 13], // 4 bytes
+            vec![14, 15, 16], // 3 bytes - this ensures we have enough data for a complete column
         ];
-        let input_stream = stream::iter(input_data.into_iter().map(|chunk| Ok::<_, std::io::Error>(Bytes::from(chunk))));
-        
+        let input_stream = stream::iter(
+            input_data
+                .into_iter()
+                .map(|chunk| Ok::<_, std::io::Error>(Bytes::from(chunk))),
+        );
+
         // Create executer with alpha=2, leap_window=4 (2x2 grid), and 8-byte chunks
-        let executer = Executer::new(2)
-            .with_leap_window(4)
-            .with_chunk_size(8);
-        
+        let executer = Executer::new(2).with_leap_window(4).with_chunk_size(8);
+
         // Entangle the stream
         let result = executer.entangle(input_stream).await.unwrap();
-        
+
         // Verify we got 2 parity streams
         assert_eq!(result.parity_streams.len(), 2);
         assert_eq!(result.strand_types.len(), 2);
         assert_eq!(result.strand_types[0], StrandType::Left);
         assert_eq!(result.strand_types[1], StrandType::Horizontal);
-        
+
         // Collect results from each parity stream
         let mut parity_results = Vec::new();
         for mut stream in result.parity_streams {
@@ -857,12 +979,18 @@ mod tests {
             }
             parity_results.push(chunks);
         }
-        
+
         // Verify each parity stream has chunks of the correct size
         for (i, chunks) in parity_results.iter().enumerate() {
             assert!(!chunks.is_empty(), "Parity stream {} should have chunks", i);
             for (j, chunk) in chunks.iter().enumerate() {
-                assert_eq!(chunk.len(), 8, "Chunk {} in stream {} should be 8 bytes", j, i);
+                assert_eq!(
+                    chunk.len(),
+                    8,
+                    "Chunk {} in stream {} should be 8 bytes",
+                    j,
+                    i
+                );
             }
         }
     }
@@ -873,24 +1001,27 @@ mod tests {
         let mut input_data = Vec::new();
         input_data.push(Ok(Bytes::from(vec![1, 2, 3, 4, 5, 6, 7, 8])));
         input_data.push(Ok(Bytes::from(vec![9, 10, 11, 12, 13, 14, 15, 16])));
-        input_data.push(Err(std::io::Error::new(std::io::ErrorKind::Other, "test error")));
-        
+        input_data.push(Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "test error",
+        )));
+
         let input_stream = stream::iter(input_data);
-        
+
         // Create executer with alpha=1 and leap_window=4
         let executer = Executer::new(1).with_leap_window(4);
-        
+
         // Entangle the stream
         let result = executer.entangle(input_stream).await.unwrap();
-        
+
         // Get the first (and only) parity stream
         let mut parity_stream = result.parity_streams.into_iter().next().unwrap();
-        
+
         // Should receive some valid chunks followed by an error
         let mut received_valid_chunks = false;
         let mut received_error = false;
         let mut error_message = String::new();
-        
+
         while let Some(result) = parity_stream.next().await {
             match result {
                 Ok(_) => received_valid_chunks = true,
@@ -901,9 +1032,200 @@ mod tests {
                 }
             }
         }
-        
+
         assert!(received_valid_chunks, "Should have received valid chunks");
         assert!(received_error, "Should have received error");
-        assert!(error_message.contains("test error"), "Error message should contain 'test error'");
+        assert!(
+            error_message.contains("test error"),
+            "Error message should contain 'test error'"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stream_entangle_with_incomplete_leap_window() {
+        // Create a stream with 13 chunks (not aligned with leap window of 9)
+        let input_data = vec![
+            // First column (x=0)
+            vec![1, 1, 1, 1, 1, 1, 1, 1], // y=0
+            vec![2, 2, 2, 2, 2, 2, 2, 2], // y=1
+            vec![3, 3, 3, 3, 3, 3, 3, 3], // y=2
+            // Second column (x=1)
+            vec![4, 4, 4, 4, 4, 4, 4, 4], // y=0
+            vec![5, 5, 5, 5, 5, 5, 5, 5], // y=1
+            vec![6, 6, 6, 6, 6, 6, 6, 6], // y=2
+            // Third column (x=2)
+            vec![7, 7, 7, 7, 7, 7, 7, 7], // y=0
+            vec![8, 8, 8, 8, 8, 8, 8, 8], // y=1
+            vec![9, 9, 9, 9, 9, 9, 9, 9], // y=2
+            // Fourth column (x=3) - incomplete
+            vec![10, 10, 10, 10, 10, 10, 10, 10], // y=0
+            vec![11, 11, 11, 11, 11, 11, 11, 11], // y=1
+            vec![12, 12, 12, 12, 12, 12, 12, 12], // y=2
+            // Fifth column (x=4) - single chunk
+            vec![13, 13, 13, 13, 13, 13, 13, 13], // y=0
+        ];
+        let input_stream = stream::iter(
+            input_data
+                .into_iter()
+                .map(|chunk| Ok::<_, std::io::Error>(Bytes::from(chunk))),
+        );
+
+        // Create executer with alpha=3, leap_window=9 (3x3 grid), and 8-byte chunks
+        let executer = Executer::new(3).with_leap_window(9).with_chunk_size(8);
+
+        // Entangle the stream
+        let result = executer.entangle(input_stream).await.unwrap();
+
+        // Verify we got 3 parity streams
+        assert_eq!(result.parity_streams.len(), 3);
+        assert_eq!(result.strand_types.len(), 3);
+        assert_eq!(result.strand_types[0], StrandType::Left);
+        assert_eq!(result.strand_types[1], StrandType::Horizontal);
+        assert_eq!(result.strand_types[2], StrandType::Right);
+
+        // Collect results from each parity stream
+        let mut parity_results = Vec::new();
+        for mut stream in result.parity_streams {
+            let mut chunks = Vec::new();
+            while let Some(chunk_result) = stream.next().await {
+                chunks.push(chunk_result.unwrap().to_vec());
+            }
+            parity_results.push(chunks);
+        }
+
+        // Helper function to create expected chunk
+        let create_expected = |v1: u8, v2: u8| -> Vec<u8> {
+            let chunk1 = vec![v1; 8];
+            let chunk2 = vec![v2; 8];
+            entangle_chunks(&Bytes::from(chunk1), &Bytes::from(chunk2)).to_vec()
+        };
+
+        //     0  1  2  3  4  5
+        // 0  01 04 07 10 13  .
+        // 1  02 05 08 11  .  .
+        // 2  03 06 09 12  .  .
+
+        // Verify Left strand (moves right and up, wraps at top)
+        let left_chunks = &parity_results[0];
+        // First column entangles with second column
+        assert_eq!(
+            left_chunks[0],
+            create_expected(1, 6),
+            "Left strand (0,0) -> (1,2)"
+        );
+        assert_eq!(
+            left_chunks[1],
+            create_expected(2, 4),
+            "Left strand (0,1) -> (1,0)"
+        );
+        assert_eq!(
+            left_chunks[2],
+            create_expected(3, 5),
+            "Left strand (0,2) -> (1,1)"
+        );
+        // Fourth complete column entangles with fifth incomplete column
+        assert_eq!(
+            left_chunks[9],
+            create_expected(10, 1),
+            "Left strand (3,0) -> (0,0)"
+        );
+        assert_eq!(
+            left_chunks[10],
+            create_expected(11, 13),
+            "Left strand (3,1) -> (4,0)"
+        );
+        assert_eq!(
+            left_chunks[11],
+            create_expected(12, 3),
+            "Left strand (3,2) -> (0,2)"
+        );
+        // Fifth incomplete column entangles with first complete column
+        assert_eq!(
+            left_chunks[12],
+            create_expected(13, 2),
+            "Left strand (4,0) -> (0,1)"
+        );
+
+        // Verify Horizontal strand (moves right only)
+        let horizontal_chunks = &parity_results[1];
+        // First column entangles with second column
+        assert_eq!(
+            horizontal_chunks[0],
+            create_expected(1, 4),
+            "Horizontal strand (0,0) -> (1,0)"
+        );
+        assert_eq!(
+            horizontal_chunks[1],
+            create_expected(2, 5),
+            "Horizontal strand (0,1) -> (1,1)"
+        );
+        assert_eq!(
+            horizontal_chunks[2],
+            create_expected(3, 6),
+            "Horizontal strand (0,2) -> (1,2)"
+        );
+        // Fourth complete column entangles with fifth incomplete column
+        assert_eq!(
+            horizontal_chunks[9],
+            create_expected(10, 13),
+            "Horizontal strand (3,0) -> (4,0)"
+        );
+        assert_eq!(
+            horizontal_chunks[10],
+            create_expected(11, 2),
+            "Horizontal strand (3,1) -> (0,1)"
+        );
+        assert_eq!(
+            horizontal_chunks[11],
+            create_expected(12, 3),
+            "Horizontal strand (3,2) -> (0,2)"
+        );
+        // Fifth incomplete column entangles with first complete column
+        assert_eq!(
+            horizontal_chunks[12],
+            create_expected(13, 1),
+            "Horizontal strand (4,0) -> (0,0)"
+        );
+
+        // Verify Right strand (moves right and down, wraps at bottom)
+        let right_chunks = &parity_results[2];
+        // First column entangles with second column
+        assert_eq!(
+            right_chunks[0],
+            create_expected(1, 5),
+            "Right strand (0,0) -> (1,1)"
+        );
+        assert_eq!(
+            right_chunks[1],
+            create_expected(2, 6),
+            "Right strand (0,1) -> (1,2)"
+        );
+        assert_eq!(
+            right_chunks[2],
+            create_expected(3, 4),
+            "Right strand (0,2) -> (1,0)"
+        );
+        // Fourth complete column entangles with fifth incomplete column
+        assert_eq!(
+            right_chunks[9],
+            create_expected(10, 1),
+            "Right strand (3,0) -> (0,0)"
+        );
+        assert_eq!(
+            right_chunks[10],
+            create_expected(11, 2),
+            "Right strand (3,1) -> (0,1)"
+        );
+        assert_eq!(
+            right_chunks[11],
+            create_expected(12, 13),
+            "Right strand (3,2) -> (4,0)"
+        );
+        // Fifth incomplete column entangles with first complete column
+        assert_eq!(
+            right_chunks[12],
+            create_expected(13, 3),
+            "Right strand (4,0) -> (0,2)"
+        );
     }
 }
