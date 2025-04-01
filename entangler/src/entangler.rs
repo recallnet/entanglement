@@ -159,38 +159,48 @@ impl<T: Storage> Entangler<T> {
         upload_results.push(orig_upload_result.clone());
 
         // Now entangle the uploaded data
-        let mut entanglement_result = self.entangle_uploaded(orig_upload_result.hash.clone()).await?;
-        entanglement_result.upload_results.insert(0, orig_upload_result);
+        let mut entanglement_result = self
+            .entangle_uploaded(orig_upload_result.hash.clone())
+            .await?;
+        entanglement_result
+            .upload_results
+            .insert(0, orig_upload_result);
         Ok(entanglement_result)
     }
 
     /// Creates entangled parity blobs for the given data and uploads them to the storage backend.
     /// The original data is also uploaded to the storage backend.
     /// Returns the hash of the metadata and the upload results for parity blobs and metadata.
-    async fn entangle(&self, bytes: Bytes, hash: String) -> Result<(String, Vec<UploadResult>)> {
-        let num_bytes = bytes.len();
+    async fn entangle<S, E>(&self, stream: S, hash: String) -> Result<(String, Vec<UploadResult>)>
+    where
+        S: Stream<Item = Result<Bytes, E>> + Send + Unpin + 'static,
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        // Create an executer with our configuration
+        let executer = executer::Executer::new(self.config.alpha)
+            .with_leap_window((self.config.s as u64).pow(2))
+            .with_chunk_size(CHUNK_SIZE as usize);
 
-        // For now, we'll keep using the Grid approach for compatibility with repair functionality
-        let chunks = bytes_to_chunks(bytes, CHUNK_SIZE);
-        let num_chunks = chunks.len() as u64;
-
-        let orig_grid = Grid::new(chunks, u64::min(self.config.s as u64, num_chunks))?;
-
-        let exec = executer::Executer::new(self.config.alpha);
+        // Get the parity streams
+        let result = executer
+            .entangle(stream)
+            .await
+            .map_err(|e| Error::Other(e.into()))?;
 
         let mut parity_hashes = Vec::new();
         let mut upload_results = Vec::new();
 
-        for parity_grid in exec.iter_parities(orig_grid) {
-            let data = parity_grid.grid.assemble_data();
-            let upload_result = self.storage.upload_bytes(bytes_to_stream(data)).await?;
+        // Upload each parity stream
+        for stream in result.parity_streams {
+            let upload_result = self.storage.upload_bytes(stream).await?;
             parity_hashes.push(upload_result.hash.clone());
             upload_results.push(upload_result);
         }
 
+        let num_bytes = self.storage.get_blob_size(&hash).await?;
         let metadata = Metadata {
-            orig_hash: hash.clone(),
-            num_bytes: num_bytes as u64,
+            orig_hash: hash,
+            num_bytes,
             parity_hashes,
             chunk_size: CHUNK_SIZE,
             s: self.config.s,
@@ -218,10 +228,8 @@ impl<T: Storage> Entangler<T> {
     /// An `EntanglementResult` containing the hash of the original data, the hash of the metadata,
     /// and all upload results (parity blobs and metadata blob).
     pub async fn entangle_uploaded(&self, hash: String) -> Result<EntanglementResult> {
-        // For now we'll keep the original approach for compatibility with repair functionality
         let orig_data_stream = self.storage.download_bytes(&hash).await?;
-        let bytes = read_stream(orig_data_stream).await?;
-        let (metadata_hash, upload_results) = self.entangle(bytes, hash.clone()).await?;
+        let (metadata_hash, upload_results) = self.entangle(orig_data_stream, hash.clone()).await?;
 
         Ok(EntanglementResult {
             orig_hash: hash,
