@@ -227,30 +227,43 @@ where
         total_columns_processed += 1;
     }
 
-    let positioner = Positioner::new(column_height, chunk_buffer.len() as u64);
-
     // we might start iterating over the remaining chunks from the middle of the leap window
     // so we need to offset the index
     let index_offset = (total_columns_processed % column_height) * column_height;
 
+    let positioner = Positioner::new(column_height, index_offset + chunk_buffer.len() as u64);
+
     for (i, chunk) in chunk_buffer.iter().enumerate() {
-        // x within the current leap window
-        let cur_x = total_columns_processed % column_height;
-        let pos = Pos::new(cur_x, i as u64 % column_height);
+        let pos = positioner.index_to_pos(i as u64 + index_offset);
 
         for (j, &strand_type) in strand_types.iter().enumerate() {
             let next_pos = positioner.normalize(pos + strand_type);
-            let next_index = positioner.pos_to_index(next_pos);
-            // if next x is 0, we should entangle with the first column (else branch)
-            // otherwise if the next chunk for the current chunk is within the buffer, we entangle with it
-            let next_chunk =
-                if next_pos.x != 0 && next_index - index_offset < chunk_buffer.len() as u64 {
-                    &chunk_buffer[(next_index - index_offset) as usize]
+            let next_chunk = if next_pos.x == 0 {
+                // if x is 0, we should entangle with the first column
+                if let Some(first_column) = &first_column {
+                    &first_column[next_pos.y as usize]
                 } else {
-                    let steps = column_height - next_pos.x as u64;
+                    // if there is no first column, we deal with very short input data that doesn't fit
+                    // into a single column, so it's not possible to entangle it and we return the
+                    // chunk as is, so it will entangle with itself and produce bytes of zeros
+                    &chunk
+                }
+            } else {
+                let next_index = positioner.pos_to_index(next_pos);
+                let buffer_index = next_index - index_offset;
+                // if the pair we want to entangle with is within the buffer, we use it
+                if buffer_index < chunk_buffer.len() as u64 {
+                    &chunk_buffer[(buffer_index) as usize]
+                } else if let Some(first_column) = &first_column {
+                    // if the pair we want to entangle with is not within the buffer, we need to wrap
+                    // around the leap window and use the first column
+                    let steps = column_height - (next_pos.x as u64 % column_height);
                     let next_pos = positioner.normalize(next_pos.near(strand_type.into(), steps));
-                    &first_column.as_ref().unwrap()[next_pos.y as usize]
-                };
+                    &first_column[next_pos.y as usize]
+                } else {
+                    &chunk
+                }
+            };
 
             let parity = entangle_chunks(chunk, next_chunk);
             senders[j]
@@ -1078,62 +1091,74 @@ mod tests {
             vec![7, 7, 7, 7, 7, 7, 7, 7], // y=0
             vec![8, 8, 8, 8, 8, 8, 8, 8], // y=1
             vec![9, 9, 9, 9, 9, 9, 9, 9], // y=2
-            // Fourth column (x=3) - incomplete
+            // Fourth column (x=3)
             vec![10, 10, 10, 10, 10, 10, 10, 10], // y=0
             vec![11, 11, 11, 11, 11, 11, 11, 11], // y=1
             vec![12, 12, 12, 12, 12, 12, 12, 12], // y=2
-            // Fifth column (x=4) - single chunk
+            // Fifth column (x=4)
             vec![13, 13, 13, 13, 13, 13, 13, 13], // y=0
+            vec![14, 14, 14, 14, 14, 14, 14, 14], // y=1
+            vec![15, 15, 15, 15, 15, 15, 15, 15], // y=2
+            // Sixth column (x=5)
+            vec![16, 16, 16, 16, 16, 16, 16, 16], // y=0
+            vec![17, 17, 17, 17, 17, 17, 17, 17], // y=1
+            vec![18, 18, 18, 18, 18, 18, 18, 18], // y=2
         ];
-        let input_stream = stream::iter(
-            input_data
-                .clone()
-                .into_iter()
-                .map(|chunk| Ok::<_, std::io::Error>(Bytes::from(chunk))),
-        );
 
-        // Create executer with alpha=3, leap_window=9 (3x3 grid), and 8-byte chunks
-        let executer = Executer::new(3).with_leap_window(9).with_chunk_size(8);
+        // test with different data lengths
+        for data_len in 1..input_data.len() {
+            let input_data = input_data[..data_len].to_vec();
 
-        // Entangle the stream
-        let result = executer.entangle(input_stream).await.unwrap();
+            let input_stream = stream::iter(
+                input_data
+                    .clone()
+                    .into_iter()
+                    .map(|chunk| Ok::<_, std::io::Error>(Bytes::from(chunk))),
+            );
 
-        // Verify we got 3 parity streams
-        assert_eq!(result.parity_streams.len(), 3);
-        assert_eq!(result.strand_types.len(), 3);
-        assert_eq!(result.strand_types[0], StrandType::Left);
-        assert_eq!(result.strand_types[1], StrandType::Horizontal);
-        assert_eq!(result.strand_types[2], StrandType::Right);
+            // Create executer with alpha=3, leap_window=9 (3x3 grid), and 8-byte chunks
+            let executer = Executer::new(3).with_leap_window(9).with_chunk_size(8);
 
-        // Collect results from each parity stream
-        let mut parity_results = Vec::new();
-        for mut stream in result.parity_streams {
-            let mut chunks = Vec::new();
-            while let Some(chunk_result) = stream.next().await {
-                chunks.push(chunk_result.unwrap().to_vec());
+            // Entangle the stream
+            let result = executer.entangle(input_stream).await.unwrap();
+
+            // Verify we got 3 parity streams
+            assert_eq!(result.parity_streams.len(), 3);
+            assert_eq!(result.strand_types.len(), 3);
+            assert_eq!(result.strand_types[0], StrandType::Left);
+            assert_eq!(result.strand_types[1], StrandType::Horizontal);
+            assert_eq!(result.strand_types[2], StrandType::Right);
+
+            // Collect results from each parity stream
+            let mut parity_results = Vec::new();
+            for mut stream in result.parity_streams {
+                let mut chunks = Vec::new();
+                while let Some(chunk_result) = stream.next().await {
+                    chunks.push(chunk_result.unwrap().to_vec());
+                }
+                parity_results.push(chunks);
             }
-            parity_results.push(chunks);
-        }
 
-        let positioner = Positioner::new(3, 13);
-        for (i, parity_result) in parity_results.iter().enumerate() {
-            let strand_type = StrandType::try_from_index(i).unwrap();
-            for (j, chunk) in input_data.iter().enumerate() {
-                let pos = positioner.index_to_pos(j as u64);
-                let (pair_chunk, pair_pos) =
-                    get_pair_chunk(&input_data, &positioner, pos, strand_type);
-                let expected_chunk = entangle_chunks(chunk, &pair_chunk);
-                assert_eq!(
-                    &parity_result[j],
-                    &expected_chunk.to_vec(),
-                    "Unexpected {} parity chunk at pos {:?}\n\tOriginal chunk: {:?}\n\tPair chunk: {:?} at pos {:?}\n\tExpected chunk: {:?}",
-                    strand_type,
-                    pos,
-                    chunk,
-                    pair_chunk,
-                    pair_pos,
-                    expected_chunk.to_vec()
-                );
+            let positioner = Positioner::new(3, data_len as u64);
+            for (i, parity_result) in parity_results.iter().enumerate() {
+                let strand_type = StrandType::try_from_index(i).unwrap();
+                for (j, chunk) in input_data.iter().enumerate() {
+                    let pos = positioner.index_to_pos(j as u64);
+                    let (pair_chunk, pair_pos) =
+                        get_pair_chunk(&input_data, &positioner, pos, strand_type);
+                    let expected_chunk = entangle_chunks(chunk, &pair_chunk);
+                    assert_eq!(
+                        &parity_result[j],
+                        &expected_chunk.to_vec(),
+                        "Unexpected {} parity chunk at pos {:?}\n\tOriginal chunk: {:?}\n\tPair chunk: {:?} at pos {:?}\n\tExpected chunk: {:?}",
+                        strand_type,
+                        pos,
+                        chunk,
+                        pair_chunk,
+                        pair_pos,
+                        expected_chunk.to_vec()
+                    );
+                }
             }
         }
     }
