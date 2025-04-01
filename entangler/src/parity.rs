@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0, MIT
 
 use crate::grid::{Dir, Grid, Pos};
+use core::fmt;
 use serde::{Deserialize, Serialize};
 use std;
 
@@ -13,6 +14,12 @@ pub enum StrandType {
     Left,
     Horizontal,
     Right,
+}
+
+impl fmt::Display for StrandType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
 }
 
 impl StrandType {
@@ -52,7 +59,7 @@ impl StrandType {
     pub fn to_opposite_dir(self) -> Dir {
         Dir::from(self).opposite()
     }
-    
+
     /// Returns a list of strand types of a given size.
     pub fn list(size: usize) -> Option<Vec<Self>> {
         match size {

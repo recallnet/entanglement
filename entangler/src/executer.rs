@@ -246,11 +246,11 @@ where
             let next_chunk =
                 if next_pos.x != 0 && next_index - index_offset < chunk_buffer.len() as u64 {
                     &chunk_buffer[(next_index - index_offset) as usize]
-        } else {
+                } else {
                     let steps = column_height - next_pos.x as u64;
                     let next_pos = positioner.normalize(next_pos.near(strand_type.into(), steps));
                     &first_column.as_ref().unwrap()[next_pos.y as usize]
-            };
+                };
 
             let parity = entangle_chunks(chunk, next_chunk);
             senders[j]
@@ -317,7 +317,9 @@ async fn process_columns(
 }
 
 /// For backwards compatibility: entangles two chunks using XOR operation
-fn entangle_chunks(chunk1: &Bytes, chunk2: &Bytes) -> Bytes {
+fn entangle_chunks<T: AsRef<[u8]>>(chunk1: &T, chunk2: &T) -> Bytes {
+    let chunk1 = chunk1.as_ref();
+    let chunk2 = chunk2.as_ref();
     let mut chunk = Vec::with_capacity(chunk1.len());
     for i in 0..chunk1.len() {
         chunk.push(chunk1[i] ^ chunk2[i]);
@@ -835,6 +837,11 @@ mod tests {
             entangle_chunks(&Bytes::from(chunk1), &Bytes::from(chunk2)).to_vec()
         };
 
+        //  0  1  2  3  4
+        // 01 04 07 10 13 ..
+        // 02 05 08 11 .. ..
+        // 03 06 09 12 .. ..
+
         // Verify Left strand (moves right and up, wraps at top)
         let left_chunks = &parity_results[0];
         // First column entangles with second column
@@ -1040,6 +1047,21 @@ mod tests {
         );
     }
 
+    // Get a chunk to entangle with for a given position and strand type
+    fn get_pair_chunk(
+        data: &[Vec<u8>],
+        positioner: &Positioner,
+        pos: Pos,
+        strand_type: StrandType,
+    ) -> (Vec<u8>, Pos) {
+        let mut next_pos = positioner.normalize(pos + strand_type);
+        while !positioner.is_pos_available(next_pos) {
+            next_pos = positioner.normalize(next_pos + strand_type);
+        }
+        let next_index = positioner.pos_to_index(next_pos);
+        (data[next_index as usize].clone(), next_pos)
+    }
+
     #[tokio::test]
     async fn test_stream_entangle_with_incomplete_leap_window() {
         // Create a stream with 13 chunks (not aligned with leap window of 9)
@@ -1065,6 +1087,7 @@ mod tests {
         ];
         let input_stream = stream::iter(
             input_data
+                .clone()
                 .into_iter()
                 .map(|chunk| Ok::<_, std::io::Error>(Bytes::from(chunk))),
         );
@@ -1092,139 +1115,26 @@ mod tests {
             parity_results.push(chunks);
         }
 
-        // Helper function to create expected chunk
-        let create_expected = |v1: u8, v2: u8| -> Vec<u8> {
-            let chunk1 = vec![v1; 8];
-            let chunk2 = vec![v2; 8];
-            entangle_chunks(&Bytes::from(chunk1), &Bytes::from(chunk2)).to_vec()
-        };
-
-        //     0  1  2  3  4  5
-        // 0  01 04 07 10 13  .
-        // 1  02 05 08 11  .  .
-        // 2  03 06 09 12  .  .
-
-        // Verify Left strand (moves right and up, wraps at top)
-        let left_chunks = &parity_results[0];
-        // First column entangles with second column
-        assert_eq!(
-            left_chunks[0],
-            create_expected(1, 6),
-            "Left strand (0,0) -> (1,2)"
-        );
-        assert_eq!(
-            left_chunks[1],
-            create_expected(2, 4),
-            "Left strand (0,1) -> (1,0)"
-        );
-        assert_eq!(
-            left_chunks[2],
-            create_expected(3, 5),
-            "Left strand (0,2) -> (1,1)"
-        );
-        // Fourth complete column entangles with fifth incomplete column
-        assert_eq!(
-            left_chunks[9],
-            create_expected(10, 1),
-            "Left strand (3,0) -> (0,0)"
-        );
-        assert_eq!(
-            left_chunks[10],
-            create_expected(11, 13),
-            "Left strand (3,1) -> (4,0)"
-        );
-        assert_eq!(
-            left_chunks[11],
-            create_expected(12, 3),
-            "Left strand (3,2) -> (0,2)"
-        );
-        // Fifth incomplete column entangles with first complete column
-        assert_eq!(
-            left_chunks[12],
-            create_expected(13, 2),
-            "Left strand (4,0) -> (0,1)"
-        );
-
-        // Verify Horizontal strand (moves right only)
-        let horizontal_chunks = &parity_results[1];
-        // First column entangles with second column
-        assert_eq!(
-            horizontal_chunks[0],
-            create_expected(1, 4),
-            "Horizontal strand (0,0) -> (1,0)"
-        );
-        assert_eq!(
-            horizontal_chunks[1],
-            create_expected(2, 5),
-            "Horizontal strand (0,1) -> (1,1)"
-        );
-        assert_eq!(
-            horizontal_chunks[2],
-            create_expected(3, 6),
-            "Horizontal strand (0,2) -> (1,2)"
-        );
-        // Fourth complete column entangles with fifth incomplete column
-        assert_eq!(
-            horizontal_chunks[9],
-            create_expected(10, 13),
-            "Horizontal strand (3,0) -> (4,0)"
-        );
-        assert_eq!(
-            horizontal_chunks[10],
-            create_expected(11, 2),
-            "Horizontal strand (3,1) -> (0,1)"
-        );
-        assert_eq!(
-            horizontal_chunks[11],
-            create_expected(12, 3),
-            "Horizontal strand (3,2) -> (0,2)"
-        );
-        // Fifth incomplete column entangles with first complete column
-        assert_eq!(
-            horizontal_chunks[12],
-            create_expected(13, 1),
-            "Horizontal strand (4,0) -> (0,0)"
-        );
-
-        // Verify Right strand (moves right and down, wraps at bottom)
-        let right_chunks = &parity_results[2];
-        // First column entangles with second column
-        assert_eq!(
-            right_chunks[0],
-            create_expected(1, 5),
-            "Right strand (0,0) -> (1,1)"
-        );
-        assert_eq!(
-            right_chunks[1],
-            create_expected(2, 6),
-            "Right strand (0,1) -> (1,2)"
-        );
-        assert_eq!(
-            right_chunks[2],
-            create_expected(3, 4),
-            "Right strand (0,2) -> (1,0)"
-        );
-        // Fourth complete column entangles with fifth incomplete column
-        assert_eq!(
-            right_chunks[9],
-            create_expected(10, 1),
-            "Right strand (3,0) -> (0,0)"
-        );
-        assert_eq!(
-            right_chunks[10],
-            create_expected(11, 2),
-            "Right strand (3,1) -> (0,1)"
-        );
-        assert_eq!(
-            right_chunks[11],
-            create_expected(12, 13),
-            "Right strand (3,2) -> (4,0)"
-        );
-        // Fifth incomplete column entangles with first complete column
-        assert_eq!(
-            right_chunks[12],
-            create_expected(13, 3),
-            "Right strand (4,0) -> (0,2)"
-        );
+        let positioner = Positioner::new(3, 13);
+        for (i, parity_result) in parity_results.iter().enumerate() {
+            let strand_type = StrandType::try_from_index(i).unwrap();
+            for (j, chunk) in input_data.iter().enumerate() {
+                let pos = positioner.index_to_pos(j as u64);
+                let (pair_chunk, pair_pos) =
+                    get_pair_chunk(&input_data, &positioner, pos, strand_type);
+                let expected_chunk = entangle_chunks(chunk, &pair_chunk);
+                assert_eq!(
+                    &parity_result[j],
+                    &expected_chunk.to_vec(),
+                    "Unexpected {} parity chunk at pos {:?}\n\tOriginal chunk: {:?}\n\tPair chunk: {:?} at pos {:?}\n\tExpected chunk: {:?}",
+                    strand_type,
+                    pos,
+                    chunk,
+                    pair_chunk,
+                    pair_pos,
+                    expected_chunk.to_vec()
+                );
+            }
+        }
     }
 }
