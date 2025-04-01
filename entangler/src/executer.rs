@@ -227,10 +227,35 @@ where
         total_columns_processed += 1;
     }
 
+    // Process remaining chunks
+    process_remaining_chunks(
+        chunk_buffer,
+        first_column,
+        total_columns_processed,
+        column_height,
+        &senders,
+        &strand_types,
+    )
+    .await?;
+
+    // Close the channels by dropping the senders
+    drop(senders);
+
+    Ok(())
+}
+
+/// Process any remaining chunks that don't form complete columns
+async fn process_remaining_chunks(
+    chunk_buffer: Vec<Bytes>,
+    first_column: Option<Vec<Bytes>>,
+    total_columns_processed: u64,
+    column_height: u64,
+    senders: &[mpsc::Sender<Result<Bytes, EntanglementError>>],
+    strand_types: &[StrandType],
+) -> Result<(), EntanglementError> {
     // we might start iterating over the remaining chunks from the middle of the leap window
     // so we need to offset the index
     let index_offset = (total_columns_processed % column_height) * column_height;
-
     let positioner = Positioner::new(column_height, index_offset + chunk_buffer.len() as u64);
 
     for (i, chunk) in chunk_buffer.iter().enumerate() {
@@ -271,14 +296,7 @@ where
                 .await
                 .map_err(|_| EntanglementError::SendError)?;
         }
-
-        if i == column_height as usize - 1 {
-            total_columns_processed += 1;
-        }
     }
-
-    // Close the channels by dropping the senders
-    drop(senders);
 
     Ok(())
 }
