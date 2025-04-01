@@ -1,13 +1,12 @@
 // Copyright 2024 Entanglement Contributors
 // SPDX-License-Identifier: Apache-2.0, MIT
 
-use crate::grid::{self, Grid, Pos, Positioner};
+use crate::grid::{Grid, Pos, Positioner};
 use crate::parity::{ParityGrid, StrandType};
 use anyhow::Result;
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use std::error::Error as StdError;
-use std::fmt;
 use std::pin::Pin;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -228,24 +227,29 @@ where
         total_columns_processed += 1;
     }
 
+    let positioner = Positioner::new(column_height, chunk_buffer.len() as u64);
+
+    // we might start iterating over the remaining chunks from the middle of the leap window
+    // so we need to offset the index
+    let index_offset = (total_columns_processed % column_height) * column_height;
+
     for (i, chunk) in chunk_buffer.iter().enumerate() {
-        // next x within the current leap window
-        let next_x = (total_columns_processed + 1) % column_height;
+        // x within the current leap window
+        let cur_x = total_columns_processed % column_height;
+        let pos = Pos::new(cur_x, i as u64 % column_height);
 
         for (j, &strand_type) in strand_types.iter().enumerate() {
-            let next_y = mod_int((i as i64) + strand_type.to_i64(), column_height);
-            let next_index = next_x * column_height + next_y;
-            // if next_x is 0, we should entangle with the first column (else branch)
+            let next_pos = positioner.normalize(pos + strand_type);
+            let next_index = positioner.pos_to_index(next_pos);
+            // if next x is 0, we should entangle with the first column (else branch)
             // otherwise if the next chunk for the current chunk is within the buffer, we entangle with it
-            let next_chunk = if next_x != 0 && next_index < chunk_buffer.len() as u64 {
-                &chunk_buffer[next_index as usize]
+            let next_chunk =
+                if next_pos.x != 0 && next_index - index_offset < chunk_buffer.len() as u64 {
+                    &chunk_buffer[(next_index - index_offset) as usize]
         } else {
-                let steps = column_height - next_x;
-                let next_y = mod_int(
-                    (next_y as i64) + strand_type.to_i64() * (steps as i64),
-                    column_height,
-                );
-                &first_column.as_ref().unwrap()[next_y as usize]
+                    let steps = column_height - next_pos.x as u64;
+                    let next_pos = positioner.normalize(next_pos.near(strand_type.into(), steps));
+                    &first_column.as_ref().unwrap()[next_pos.y as usize]
             };
 
             let parity = entangle_chunks(chunk, next_chunk);
@@ -264,11 +268,6 @@ where
     drop(senders);
 
     Ok(())
-}
-
-fn mod_int(int: i64, m: u64) -> u64 {
-    let w = m as i64;
-    ((int % w + w) % w) as u64
 }
 
 async fn process_columns(
