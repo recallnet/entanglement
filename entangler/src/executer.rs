@@ -227,7 +227,6 @@ where
         total_columns_processed += 1;
     }
 
-    // Process remaining chunks
     process_remaining_chunks(
         chunk_buffer,
         first_column,
@@ -238,7 +237,6 @@ where
     )
     .await?;
 
-    // Close the channels by dropping the senders
     drop(senders);
 
     Ok(())
@@ -308,39 +306,23 @@ async fn process_columns(
     column_height: u64,
 ) -> Result<(), EntanglementError> {
     let column_start = chunk_buffer.len() - 2 * column_height as usize;
+    let positioner = Positioner::new(column_height, 2 * column_height);
 
-    // For each position in the first column
-    for y in 0..column_height as usize {
-        let mut parity_chunks = Vec::with_capacity(strand_types.len());
-        let current_idx = column_start + y;
+    // Process each chunk in the first column
+    for i in 0..column_height as usize {
+        let pos = positioner.index_to_pos(i as u64);
+        let chunk = &chunk_buffer[column_start + i];
 
-        // Calculate parity for each strand type
-        for strand_type in strand_types {
-            let next_y = match strand_type {
-                StrandType::Left => {
-                    if y == 0 {
-                        column_height as usize - 1
-                    } else {
-                        y - 1
-                    }
-                }
-                StrandType::Horizontal => y,
-                StrandType::Right => (y + 1) % column_height as usize,
-            };
+        for (j, &strand_type) in strand_types.iter().enumerate() {
+            let next_pos = positioner.normalize(pos + strand_type);
+            let next_chunk =
+                &chunk_buffer[column_start + column_height as usize + next_pos.y as usize];
 
-            let next_idx = column_start + column_height as usize + next_y;
-            let parity = entangle_chunks(&chunk_buffer[current_idx], &chunk_buffer[next_idx]);
-            parity_chunks.push(parity);
-        }
-
-        // Send parity chunks to their respective channels
-        for (j, chunk) in parity_chunks.into_iter().enumerate() {
-            if j < senders.len() {
-                senders[j]
-                    .send(Ok(chunk))
-                    .await
-                    .map_err(|_| EntanglementError::SendError)?;
-            }
+            let parity = entangle_chunks(chunk, next_chunk);
+            senders[j]
+                .send(Ok(parity))
+                .await
+                .map_err(|_| EntanglementError::SendError)?;
         }
     }
 
