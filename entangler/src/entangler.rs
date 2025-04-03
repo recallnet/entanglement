@@ -172,7 +172,6 @@ impl<T: Storage> Entangler<T> {
     }
 
     /// Creates entangled parity blobs for the given data and uploads them to the storage backend.
-    /// The original data is also uploaded to the storage backend.
     /// Returns the hash of the metadata and the upload results for parity blobs and metadata.
     async fn entangle<S, E>(&self, stream: S, hash: String) -> Result<(String, Vec<UploadResult>)>
     where
@@ -184,15 +183,22 @@ impl<T: Storage> Entangler<T> {
             .with_height(self.config.s as u64)
             .with_chunk_size(CHUNK_SIZE as usize);
 
-        // Get the parity streams
-        let result = executer.entangle(stream).await?;
+        let parity_streams = executer.entangle(stream).await?;
 
         let mut parity_hashes = Vec::new();
         let mut upload_results = Vec::new();
 
-        // Upload each parity stream
-        for stream in result {
-            let upload_result = self.storage.upload_bytes(stream).await?;
+        // Upload each parity stream concurrently
+        let mut upload_tasks = Vec::new();
+        for stream in parity_streams {
+            let storage = self.storage.clone();
+            let task = tokio::spawn(async move { storage.upload_bytes(stream).await });
+            upload_tasks.push(task);
+        }
+
+        // Wait for all uploads to complete
+        for task in upload_tasks {
+            let upload_result = task.await.map_err(|e| Error::Other(e.into()))??;
             parity_hashes.push(upload_result.hash.clone());
             upload_results.push(upload_result);
         }
