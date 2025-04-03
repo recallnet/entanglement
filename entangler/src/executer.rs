@@ -210,31 +210,6 @@ where
         }
     }
 
-    // Handle any remaining data in current_chunk
-    if !current_chunk.is_empty() {
-        // Pad the last chunk with zeros to reach chunk_size
-        while current_chunk.len() < chunk_size {
-            current_chunk.push(0);
-        }
-        chunk_buffer.push(Bytes::from(current_chunk));
-    }
-
-    // Process any remaining complete columns
-    if chunk_buffer.len() >= 2 * column_height as usize {
-        process_columns(
-            &chunk_buffer[..2 * column_height as usize],
-            &senders,
-            &strand_types,
-            column_height,
-        )
-        .await
-        .map_err(|e| Error::ProcessingError {
-            source: anyhow::Error::from(e),
-        })?;
-        chunk_buffer.drain(0..column_height as usize);
-        total_columns_processed += 1;
-    }
-
     process_remaining_chunks(
         chunk_buffer,
         first_column,
