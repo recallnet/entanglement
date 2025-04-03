@@ -79,7 +79,8 @@ impl Executer {
         }
     }
 
-    /// Sets the height of the grid
+    /// Sets the height of the grid. This is the S parameter for the entanglement, i.e. the number
+    /// of horizontal strands in the grid.
     pub fn with_height(mut self, height: u64) -> Self {
         self.height = height;
         self
@@ -98,7 +99,6 @@ impl Executer {
         S: Stream<Item = Result<Bytes, E>> + Send + Unpin + 'static,
         E: std::error::Error + Send + Sync + 'static,
     {
-        // Create channels for each parity stream
         let mut receivers = Vec::with_capacity(self.alpha as usize);
         let mut senders = Vec::with_capacity(self.alpha as usize);
 
@@ -108,7 +108,6 @@ impl Executer {
             receivers.push(rx);
         }
 
-        // Create output streams
         let parity_streams = receivers
             .into_iter()
             .map(|rx| {
@@ -151,7 +150,6 @@ where
     S: Stream<Item = Result<Bytes, E>> + Unpin,
     E: std::error::Error + Send + Sync + 'static,
 {
-    // Buffer to store chunks for processing
     let mut chunk_buffer = Vec::with_capacity((2 * column_height) as usize);
     let mut current_chunk = Vec::with_capacity(chunk_size);
     let mut first_column: Option<Vec<Bytes>> = None;
@@ -161,13 +159,16 @@ where
     while let Some(chunk_result) = input.next().await {
         match chunk_result {
             Ok(data) => {
-                // Process incoming data byte by byte
-                for byte in data.iter() {
-                    current_chunk.push(*byte);
+                let mut data_slice = &data[..];
+                while !data_slice.is_empty() {
+                    let remaining_space = chunk_size - current_chunk.len();
+                    let bytes_to_take = remaining_space.min(data_slice.len());
+                    current_chunk.extend_from_slice(&data_slice[..bytes_to_take]);
+                    data_slice = &data_slice[bytes_to_take..];
 
                     if current_chunk.len() == chunk_size {
-                        chunk_buffer.push(Bytes::from(current_chunk.clone()));
-                        current_chunk.clear();
+                        chunk_buffer.push(Bytes::from(current_chunk));
+                        current_chunk = Vec::with_capacity(chunk_size);
 
                         // Store first column when we have enough chunks
                         if first_column.is_none() && chunk_buffer.len() >= column_height as usize {
@@ -204,7 +205,6 @@ where
                 for sender in &senders {
                     sender.send(Err(error.clone())).await?;
                 }
-                // The error to be returned from the function to notify the caller
                 return Err(error);
             }
         }
