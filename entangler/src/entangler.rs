@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::pin::Pin;
 
 use crate::executer;
-use crate::grid::{Grid, Positioner};
+use crate::grid::Positioner;
 use crate::repairer::{self, Repairer};
 use crate::stream::{RepairingChunkStream, RepairingStream};
 use crate::Config;
@@ -191,7 +191,7 @@ impl<T: Storage> Entangler<T> {
         let mut upload_results = Vec::new();
 
         // Upload each parity stream
-        for stream in result.parity_streams {
+        for stream in result {
             let upload_result = self.storage.upload_bytes(stream).await?;
             parity_hashes.push(upload_result.hash.clone());
             upload_results.push(upload_result);
@@ -479,32 +479,6 @@ fn bytes_to_stream(bytes: Bytes) -> ByteStream {
     Box::pin(futures::stream::once(
         async move { Ok::<Bytes, Error>(bytes) },
     ))
-}
-
-// Keep this function for compatibility with the existing code
-fn bytes_to_chunks(bytes: Bytes, chunk_size: u64) -> Vec<Bytes> {
-    let chunk_size = chunk_size as usize;
-    let mut chunks = Vec::with_capacity(bytes.len().div_ceil(chunk_size));
-    let mut start = 0;
-
-    while start < bytes.len() {
-        let end = std::cmp::min(start + chunk_size, bytes.len());
-        chunks.push(bytes.slice(start..end));
-        start = end;
-    }
-
-    // if last chunk is smaller than chunk_size, add padding
-    if let Some(last_chunk) = chunks.last_mut() {
-        *last_chunk = add_padding(last_chunk, chunk_size);
-    }
-
-    chunks
-}
-
-fn add_padding(chunk: &Bytes, chunk_size: usize) -> Bytes {
-    let mut chunk = chunk.to_vec();
-    chunk.resize(chunk_size, 0);
-    Bytes::from(chunk)
 }
 
 #[cfg(test)]

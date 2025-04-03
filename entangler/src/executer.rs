@@ -22,12 +22,6 @@ pub struct Executer {
     chunk_size: usize,
 }
 
-/// Result of the entanglement process
-pub struct EntanglementStreamResult {
-    /// Array of parity streams, one for each strand type
-    pub parity_streams: Vec<ByteStream<EntanglementError>>,
-}
-
 /// A custom error type for entanglement operations
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum EntanglementError {
@@ -67,7 +61,7 @@ impl Executer {
     pub async fn entangle<S, E>(
         &self,
         input_stream: S,
-    ) -> Result<EntanglementStreamResult, EntanglementError>
+    ) -> Result<Vec<ByteStream<EntanglementError>>, EntanglementError>
     where
         S: Stream<Item = Result<Bytes, E>> + Send + Unpin + 'static,
         E: StdError + Send + Sync + 'static,
@@ -109,7 +103,7 @@ impl Executer {
             }
         });
 
-        Ok(EntanglementStreamResult { parity_streams })
+        Ok(parity_streams)
     }
 }
 
@@ -319,7 +313,6 @@ mod tests {
     use super::*;
     use crate::grid::Pos;
     use futures::stream;
-    use tokio_stream::StreamExt;
 
     // Helper function to create a stream of bytes
     fn create_test_stream(data: Vec<Vec<u8>>) -> impl Stream<Item = Result<Bytes, std::io::Error>> {
@@ -340,11 +333,11 @@ mod tests {
         let result = executer.entangle(input_stream).await.unwrap();
 
         // Verify we got 3 parity streams (Left, Horizontal, Right)
-        assert_eq!(result.parity_streams.len(), 3);
+        assert_eq!(result.len(), 3);
 
         // Collect from each parity stream to verify contents
         let mut parity_results = Vec::new();
-        for (i, mut stream) in result.parity_streams.into_iter().enumerate() {
+        for (i, mut stream) in result.into_iter().enumerate() {
             let mut chunks = Vec::new();
             while let Some(chunk_result) = stream.next().await {
                 chunks.push(chunk_result.unwrap().to_vec());
@@ -379,10 +372,10 @@ mod tests {
         let result = executer.entangle(error_stream).await.unwrap();
 
         // Verify we got 1 parity stream
-        assert_eq!(result.parity_streams.len(), 1);
+        assert_eq!(result.len(), 1);
 
         // Collect from the parity stream to verify we get the error
-        let mut stream = result.parity_streams.into_iter().next().unwrap();
+        let mut stream = result.into_iter().next().unwrap();
         let mut error_received = false;
 
         while let Some(result) = stream.next().await {
@@ -417,10 +410,10 @@ mod tests {
         let result = executer.entangle(input_stream).await.unwrap();
 
         // Verify we got 1 parity stream
-        assert_eq!(result.parity_streams.len(), 1);
+        assert_eq!(result.len(), 1);
 
         // Collect from the parity stream
-        let mut stream = result.parity_streams.into_iter().next().unwrap();
+        let mut stream = result.into_iter().next().unwrap();
         let mut parity_chunks = Vec::new();
 
         while let Some(result) = stream.next().await {
@@ -488,11 +481,11 @@ mod tests {
         let result = executer.entangle(input_stream).await.unwrap();
 
         // Verify we got 3 parity streams
-        assert_eq!(result.parity_streams.len(), 3);
+        assert_eq!(result.len(), 3);
 
         // Collect results from each parity stream
         let mut parity_results = Vec::new();
-        for mut stream in result.parity_streams {
+        for mut stream in result {
             let mut chunks = Vec::new();
             while let Some(chunk_result) = stream.next().await {
                 chunks.push(chunk_result.unwrap().to_vec());
@@ -641,11 +634,11 @@ mod tests {
         let result = executer.entangle(input_stream).await.unwrap();
 
         // Verify we got 2 parity streams
-        assert_eq!(result.parity_streams.len(), 2);
+        assert_eq!(result.len(), 2);
 
         // Collect results from each parity stream
         let mut parity_results = Vec::new();
-        for mut stream in result.parity_streams {
+        for mut stream in result {
             let mut chunks = Vec::new();
             while let Some(chunk_result) = stream.next().await {
                 chunks.push(chunk_result.unwrap().to_vec());
@@ -688,7 +681,7 @@ mod tests {
         let result = executer.entangle(input_stream).await.unwrap();
 
         // Get the first (and only) parity stream
-        let mut parity_stream = result.parity_streams.into_iter().next().unwrap();
+        let mut parity_stream = result.into_iter().next().unwrap();
 
         // Should receive some valid chunks followed by an error
         let mut received_valid_chunks = false;
@@ -777,11 +770,11 @@ mod tests {
             let result = executer.entangle(input_stream).await.unwrap();
 
             // Verify we got 3 parity streams
-            assert_eq!(result.parity_streams.len(), 3);
+            assert_eq!(result.len(), 3);
 
             // Collect results from each parity stream
             let mut parity_results = Vec::new();
-            for mut stream in result.parity_streams {
+            for mut stream in result {
                 let mut chunks = Vec::new();
                 while let Some(chunk_result) = stream.next().await {
                     chunks.push(chunk_result.unwrap().to_vec());
