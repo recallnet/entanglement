@@ -165,7 +165,6 @@ where
                 for byte in data.iter() {
                     current_chunk.push(*byte);
 
-                    // When we have a complete chunk
                     if current_chunk.len() == chunk_size {
                         chunk_buffer.push(Bytes::from(current_chunk.clone()));
                         current_chunk.clear();
@@ -199,9 +198,13 @@ where
                 let error = Error::InputError {
                     source: anyhow::Error::from(e),
                 };
+                // The error to be sent through all parity streams because the parity streams
+                // are being consumed asynchronously by other parts of the system, and they
+                // need to know why the stream ended prematurely.
                 for sender in &senders {
                     sender.send(Err(error.clone())).await?;
                 }
+                // The error to be returned from the function to notify the caller
                 return Err(error);
             }
         }
