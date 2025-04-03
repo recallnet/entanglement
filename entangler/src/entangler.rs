@@ -181,7 +181,7 @@ impl<T: Storage> Entangler<T> {
     {
         // Create an executer with our configuration
         let executer = executer::Executer::new(self.config.alpha)
-            .with_leap_window((self.config.s as u64).pow(2))
+            .with_height(self.config.s as u64)
             .with_chunk_size(CHUNK_SIZE as usize);
 
         // Get the parity streams

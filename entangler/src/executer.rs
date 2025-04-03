@@ -17,7 +17,7 @@ pub type ByteStream<E> = Pin<Box<dyn Stream<Item = Result<Bytes, E>> + Send + Un
 /// It creates `alpha` parity streams in parallel.
 pub struct Executer {
     alpha: u8,
-    leap_window: u64,
+    height: u64,
     chunk_size: usize,
 }
 
@@ -68,20 +68,20 @@ impl Clone for Error {
 }
 
 impl Executer {
-    /// Create a new executer with the given alpha and leap window.
-    /// - alpha: The number of parity streams to create
-    /// - leap_window: The size of the leap window, which determines the wrapping behavior
+    /// Create a new executer with the given alpha, i.e. the number of parity streams to create.
+    /// The height of the grid is set to 5 by default.
+    /// The chunk size is set to 1024 by default.
     pub fn new(alpha: u8) -> Self {
         Self {
             alpha,
-            leap_window: 0,
-            chunk_size: 4, // Default to 4-byte chunks
+            height: 5,
+            chunk_size: 1024,
         }
     }
 
-    /// Sets the leap window size
-    pub fn with_leap_window(mut self, leap_window: u64) -> Self {
-        self.leap_window = leap_window;
+    /// Sets the height of the grid
+    pub fn with_height(mut self, height: u64) -> Self {
+        self.height = height;
         self
     }
 
@@ -119,8 +119,8 @@ impl Executer {
 
         // Process the input stream in a separate task to avoid blocking
         let strands_for_processing = StrandType::list(self.alpha as usize).unwrap();
-        let column_height = (self.leap_window as f64).sqrt() as u64;
         let chunk_size = self.chunk_size;
+        let column_height = self.height;
         tokio::spawn(async move {
             if let Err(e) = process_input_stream(
                 input_stream,
@@ -364,7 +364,7 @@ mod tests {
         let input_stream = create_test_stream(vec![chunk1.clone(), chunk2.clone()]);
 
         // Create an executer with alpha=3 (all strand types)
-        let executer = Executer::new(3).with_leap_window(1);
+        let executer = Executer::new(3).with_height(1).with_chunk_size(4);
 
         // Entangle the stream
         let result = executer.entangle(input_stream).await.unwrap();
@@ -403,7 +403,7 @@ mod tests {
         ]);
 
         // Create an executer
-        let executer = Executer::new(1).with_leap_window(1);
+        let executer = Executer::new(1).with_height(1).with_chunk_size(4);
 
         // Entangle the stream
         let result = executer.entangle(error_stream).await.unwrap();
@@ -441,7 +441,7 @@ mod tests {
         let input_stream = create_test_stream(chunks.clone());
 
         // Create an executer with just one strand type for simplicity
-        let executer = Executer::new(1).with_leap_window(2);
+        let executer = Executer::new(1).with_height(2).with_chunk_size(4);
 
         // Entangle the stream
         let result = executer.entangle(input_stream).await.unwrap();
@@ -511,8 +511,8 @@ mod tests {
                 .map(|chunk| Ok::<_, std::io::Error>(Bytes::from(chunk))),
         );
 
-        // Create executer with alpha=3, leap_window=9 (3x3 grid), and 8-byte chunks
-        let executer = Executer::new(3).with_leap_window(9).with_chunk_size(8);
+        // Create executer with alpha=3, height=3 (3x3 grid), and 8-byte chunks
+        let executer = Executer::new(3).with_height(3).with_chunk_size(8);
 
         // Entangle the stream
         let result = executer.entangle(input_stream).await.unwrap();
@@ -665,7 +665,7 @@ mod tests {
         );
 
         // Create executer with alpha=2, leap_window=4 (2x2 grid), and 8-byte chunks
-        let executer = Executer::new(2).with_leap_window(4).with_chunk_size(8);
+        let executer = Executer::new(2).with_height(4).with_chunk_size(8);
 
         // Entangle the stream
         let result = executer.entangle(input_stream).await.unwrap();
@@ -711,8 +711,8 @@ mod tests {
 
         let input_stream = stream::iter(input_data);
 
-        // Create executer with alpha=1 and leap_window=4
-        let executer = Executer::new(1).with_leap_window(4);
+        // Create executer with alpha=1 and height=2
+        let executer = Executer::new(1).with_height(2).with_chunk_size(4);
 
         // Entangle the stream
         let result = executer.entangle(input_stream).await.unwrap();
@@ -800,8 +800,8 @@ mod tests {
                     .map(|chunk| Ok::<_, std::io::Error>(Bytes::from(chunk))),
             );
 
-            // Create executer with alpha=3, leap_window=9 (3x3 grid), and 8-byte chunks
-            let executer = Executer::new(3).with_leap_window(9).with_chunk_size(8);
+            // Create executer with alpha=3, height=3 (3x3 grid), and 8-byte chunks
+            let executer = Executer::new(3).with_height(3).with_chunk_size(8);
 
             // Entangle the stream
             let result = executer.entangle(input_stream).await.unwrap();
