@@ -229,6 +229,7 @@ where
 }
 
 /// Process any remaining chunks that don't form complete columns
+/// This function handles entangling of the end of the stream with the first column.
 async fn process_remaining_chunks(
     chunk_buffer: Vec<Bytes>,
     first_column: Option<Vec<Bytes>>,
@@ -282,6 +283,7 @@ async fn process_remaining_chunks(
     Ok(())
 }
 
+/// Entangles the first column of the grid with the second column.
 async fn process_columns(
     chunk_buffer: &[Bytes],
     senders: &[mpsc::Sender<Result<Bytes, Error>>],
@@ -309,7 +311,6 @@ async fn process_columns(
     Ok(())
 }
 
-/// For backwards compatibility: entangles two chunks using XOR operation
 fn entangle_chunks<T: AsRef<[u8]>>(chunk1: &T, chunk2: &T) -> Bytes {
     let chunk1 = chunk1.as_ref();
     let chunk2 = chunk2.as_ref();
@@ -327,7 +328,7 @@ mod tests {
     use futures::stream;
 
     // Helper function to create a stream of bytes
-    fn create_test_stream(data: Vec<Vec<u8>>) -> impl Stream<Item = Result<Bytes, std::io::Error>> {
+    fn create_stream(data: Vec<Vec<u8>>) -> impl Stream<Item = Result<Bytes, std::io::Error>> {
         stream::iter(data.into_iter().map(|chunk| Ok(Bytes::from(chunk))))
     }
 
@@ -336,16 +337,13 @@ mod tests {
         // Create a simple stream with two chunks
         let chunk1 = vec![1, 2, 3, 4];
         let chunk2 = vec![5, 6, 7, 8];
-        let input_stream = create_test_stream(vec![chunk1.clone(), chunk2.clone()]);
+        let input_stream = create_stream(vec![chunk1.clone(), chunk2.clone()]);
 
-        // Create an executer with alpha=3 (all strand types)
         let executer = Executer::new(3).with_height(1).with_chunk_size(4);
 
-        // Entangle the stream
         let result = executer.entangle(input_stream).await.unwrap();
 
-        // Verify we got 3 parity streams (Left, Horizontal, Right)
-        assert_eq!(result.len(), 3);
+        assert_eq!(result.len(), 3, "Expected 3 parity streams");
 
         // Collect from each parity stream to verify contents
         let mut parity_results = Vec::new();
@@ -354,8 +352,7 @@ mod tests {
             while let Some(chunk_result) = stream.next().await {
                 chunks.push(chunk_result.unwrap().to_vec());
             }
-            // Each strand has at least one chunk for this simple case
-            assert!(!chunks.is_empty(), "Parity stream {} should have chunks", i);
+            assert_eq!(chunks.len(), 2, "Parity stream {} should have 2 chunks", i);
             parity_results.push(chunks);
         }
 
@@ -377,16 +374,12 @@ mod tests {
             Err(std::io::Error::new(std::io::ErrorKind::Other, "test error")),
         ]);
 
-        // Create an executer
         let executer = Executer::new(1).with_height(1).with_chunk_size(4);
 
-        // Entangle the stream
         let result = executer.entangle(error_stream).await.unwrap();
 
-        // Verify we got 1 parity stream
         assert_eq!(result.len(), 1);
 
-        // Collect from the parity stream to verify we get the error
         let mut stream = result.into_iter().next().unwrap();
         let mut error_received = false;
 
@@ -405,7 +398,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_stream_entangle_multiple_chunks() {
-        // Create a stream with multiple chunks
         let chunks = vec![
             vec![1, 2, 3, 4],
             vec![5, 6, 7, 8],
@@ -413,18 +405,14 @@ mod tests {
             vec![13, 14, 15, 16],
             vec![17, 18, 19, 20],
         ];
-        let input_stream = create_test_stream(chunks.clone());
+        let input_stream = create_stream(chunks.clone());
 
-        // Create an executer with just one strand type for simplicity
         let executer = Executer::new(1).with_height(2).with_chunk_size(4);
 
-        // Entangle the stream
         let result = executer.entangle(input_stream).await.unwrap();
 
-        // Verify we got 1 parity stream
         assert_eq!(result.len(), 1);
 
-        // Collect from the parity stream
         let mut stream = result.into_iter().next().unwrap();
         let mut parity_chunks = Vec::new();
 
@@ -453,7 +441,7 @@ mod tests {
     #[tokio::test]
     async fn test_entangle_fixed_size_chunks() {
         // Create input stream with 8-byte chunks
-        // We'll create a 3x6 grid (column_height = 3) to test donut-shaped wrapping
+        // We'll create a 3x6 grid (column_height = 3) to test toroidal wrapping
         let input_data = vec![
             // First column (x=0)
             vec![1, 1, 1, 1, 1, 1, 1, 1], // y=0
@@ -486,16 +474,12 @@ mod tests {
                 .map(|chunk| Ok::<_, std::io::Error>(Bytes::from(chunk))),
         );
 
-        // Create executer with alpha=3, height=3 (3x3 grid), and 8-byte chunks
         let executer = Executer::new(3).with_height(3).with_chunk_size(8);
 
-        // Entangle the stream
         let result = executer.entangle(input_stream).await.unwrap();
 
-        // Verify we got 3 parity streams
         assert_eq!(result.len(), 3);
 
-        // Collect results from each parity stream
         let mut parity_results = Vec::new();
         for mut stream in result {
             let mut chunks = Vec::new();
@@ -511,11 +495,6 @@ mod tests {
             let chunk2 = vec![v2; 8];
             entangle_chunks(&Bytes::from(chunk1), &Bytes::from(chunk2)).to_vec()
         };
-
-        //  0  1  2  3  4
-        // 01 04 07 10 13 ..
-        // 02 05 08 11 .. ..
-        // 03 06 09 12 .. ..
 
         // Verify Left strand (moves right and up, wraps at top)
         let left_chunks = &parity_results[0];
@@ -627,11 +606,11 @@ mod tests {
     async fn test_entangle_with_partial_chunks() {
         // Create input data that doesn't align with chunk size
         let input_data = vec![
-            vec![1, 2, 3],        // 3 bytes
-            vec![4, 5, 6, 7],     // 4 bytes
-            vec![8, 9],           // 2 bytes
-            vec![10, 11, 12, 13], // 4 bytes
-            vec![14, 15, 16], // 3 bytes - this ensures we have enough data for a complete column
+            vec![1, 2, 3],            // 3 bytes
+            vec![4, 5, 6, 7],         // 4 bytes
+            vec![8, 9],               // 2 bytes
+            vec![10, 11, 12, 13],     // 4 bytes
+            vec![14, 15, 16, 17, 18], // 5 bytes
         ];
         let input_stream = stream::iter(
             input_data
@@ -639,16 +618,12 @@ mod tests {
                 .map(|chunk| Ok::<_, std::io::Error>(Bytes::from(chunk))),
         );
 
-        // Create executer with alpha=2, leap_window=4 (2x2 grid), and 8-byte chunks
         let executer = Executer::new(2).with_height(4).with_chunk_size(8);
 
-        // Entangle the stream
         let result = executer.entangle(input_stream).await.unwrap();
 
-        // Verify we got 2 parity streams
         assert_eq!(result.len(), 2);
 
-        // Collect results from each parity stream
         let mut parity_results = Vec::new();
         for mut stream in result {
             let mut chunks = Vec::new();
@@ -658,7 +633,6 @@ mod tests {
             parity_results.push(chunks);
         }
 
-        // Verify each parity stream has chunks of the correct size
         for (i, chunks) in parity_results.iter().enumerate() {
             assert!(!chunks.is_empty(), "Parity stream {} should have chunks", i);
             for (j, chunk) in chunks.iter().enumerate() {
@@ -686,13 +660,10 @@ mod tests {
 
         let input_stream = stream::iter(input_data);
 
-        // Create executer with alpha=1 and height=2
         let executer = Executer::new(1).with_height(2).with_chunk_size(4);
 
-        // Entangle the stream
         let result = executer.entangle(input_stream).await.unwrap();
 
-        // Get the first (and only) parity stream
         let mut parity_stream = result.into_iter().next().unwrap();
 
         // Should receive some valid chunks followed by an error
@@ -775,16 +746,12 @@ mod tests {
                     .map(|chunk| Ok::<_, std::io::Error>(Bytes::from(chunk))),
             );
 
-            // Create executer with alpha=3, height=3 (3x3 grid), and 8-byte chunks
             let executer = Executer::new(3).with_height(3).with_chunk_size(8);
 
-            // Entangle the stream
             let result = executer.entangle(input_stream).await.unwrap();
 
-            // Verify we got 3 parity streams
             assert_eq!(result.len(), 3);
 
-            // Collect results from each parity stream
             let mut parity_results = Vec::new();
             for mut stream in result {
                 let mut chunks = Vec::new();
