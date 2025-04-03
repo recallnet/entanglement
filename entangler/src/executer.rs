@@ -6,7 +6,6 @@ use crate::parity::StrandType;
 use anyhow::Result;
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
-use std::error::Error as StdError;
 use std::pin::Pin;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -23,13 +22,49 @@ pub struct Executer {
 }
 
 /// A custom error type for entanglement operations
-#[derive(thiserror::Error, Debug, Clone)]
-pub enum EntanglementError {
-    #[error("Failed to send chunk to channel")]
-    SendError,
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[error("Failed to send chunk to channel: {source}")]
+    SendError {
+        #[source]
+        source: anyhow::Error,
+    },
 
-    #[error("Input stream error: {0}")]
-    InputError(String),
+    #[error("Input stream error: {source}")]
+    InputError {
+        #[source]
+        source: anyhow::Error,
+    },
+
+    #[error("Failed to process chunks: {source}")]
+    ProcessingError {
+        #[source]
+        source: anyhow::Error,
+    },
+}
+
+impl<T> From<tokio::sync::mpsc::error::SendError<T>> for Error {
+    fn from(err: tokio::sync::mpsc::error::SendError<T>) -> Self {
+        Error::SendError {
+            source: anyhow::anyhow!("Failed to send chunk: {}", err),
+        }
+    }
+}
+
+impl Clone for Error {
+    fn clone(&self) -> Self {
+        match self {
+            Error::SendError { source } => Error::SendError {
+                source: anyhow::anyhow!(source.to_string()),
+            },
+            Error::InputError { source } => Error::InputError {
+                source: anyhow::anyhow!(source.to_string()),
+            },
+            Error::ProcessingError { source } => Error::ProcessingError {
+                source: anyhow::anyhow!(source.to_string()),
+            },
+        }
+    }
 }
 
 impl Executer {
@@ -58,20 +93,17 @@ impl Executer {
 
     /// Entangles the given input stream, producing `alpha` parity streams in parallel.
     /// The parity streams are created according to the strand types.
-    pub async fn entangle<S, E>(
-        &self,
-        input_stream: S,
-    ) -> Result<Vec<ByteStream<EntanglementError>>, EntanglementError>
+    pub async fn entangle<S, E>(&self, input_stream: S) -> Result<Vec<ByteStream<Error>>, Error>
     where
         S: Stream<Item = Result<Bytes, E>> + Send + Unpin + 'static,
-        E: StdError + Send + Sync + 'static,
+        E: std::error::Error + Send + Sync + 'static,
     {
         // Create channels for each parity stream
         let mut receivers = Vec::with_capacity(self.alpha as usize);
         let mut senders = Vec::with_capacity(self.alpha as usize);
 
         for _ in 0..self.alpha {
-            let (tx, rx) = mpsc::channel::<Result<Bytes, EntanglementError>>(100);
+            let (tx, rx) = mpsc::channel::<Result<Bytes, Error>>(100);
             senders.push(tx);
             receivers.push(rx);
         }
@@ -81,7 +113,7 @@ impl Executer {
             .into_iter()
             .map(|rx| {
                 let stream = ReceiverStream::new(rx);
-                Box::pin(stream) as ByteStream<EntanglementError>
+                Box::pin(stream) as ByteStream<Error>
             })
             .collect::<Vec<_>>();
 
@@ -110,14 +142,14 @@ impl Executer {
 /// Processes the input stream and generates parity chunks for each strand type
 async fn process_input_stream<S, E>(
     mut input: S,
-    senders: Vec<mpsc::Sender<Result<Bytes, EntanglementError>>>,
+    senders: Vec<mpsc::Sender<Result<Bytes, Error>>>,
     strand_types: Vec<StrandType>,
     column_height: u64,
     chunk_size: usize,
-) -> Result<(), EntanglementError>
+) -> Result<(), Error>
 where
     S: Stream<Item = Result<Bytes, E>> + Unpin,
-    E: StdError + Send + Sync + 'static,
+    E: std::error::Error + Send + Sync + 'static,
 {
     // Buffer to store chunks for processing
     let mut chunk_buffer = Vec::with_capacity((2 * column_height) as usize);
@@ -152,7 +184,10 @@ where
                                 &strand_types,
                                 column_height,
                             )
-                            .await?;
+                            .await
+                            .map_err(|e| Error::ProcessingError {
+                                source: anyhow::Error::from(e),
+                            })?;
                             // Keep only the last column for next iteration
                             chunk_buffer.drain(0..column_height as usize);
                             total_columns_processed += 1;
@@ -161,12 +196,11 @@ where
                 }
             }
             Err(e) => {
-                let error = EntanglementError::InputError(format!("{}", e));
+                let error = Error::InputError {
+                    source: anyhow::Error::from(e),
+                };
                 for sender in &senders {
-                    sender
-                        .send(Err(error.clone()))
-                        .await
-                        .map_err(|_| EntanglementError::SendError)?;
+                    sender.send(Err(error.clone())).await?;
                 }
                 return Err(error);
             }
@@ -190,7 +224,10 @@ where
             &strand_types,
             column_height,
         )
-        .await?;
+        .await
+        .map_err(|e| Error::ProcessingError {
+            source: anyhow::Error::from(e),
+        })?;
         chunk_buffer.drain(0..column_height as usize);
         total_columns_processed += 1;
     }
@@ -203,7 +240,10 @@ where
         &senders,
         &strand_types,
     )
-    .await?;
+    .await
+    .map_err(|e| Error::ProcessingError {
+        source: anyhow::Error::from(e),
+    })?;
 
     drop(senders);
 
@@ -216,9 +256,9 @@ async fn process_remaining_chunks(
     first_column: Option<Vec<Bytes>>,
     total_columns_processed: u64,
     column_height: u64,
-    senders: &[mpsc::Sender<Result<Bytes, EntanglementError>>],
+    senders: &[mpsc::Sender<Result<Bytes, Error>>],
     strand_types: &[StrandType],
-) -> Result<(), EntanglementError> {
+) -> Result<(), Error> {
     // we might start iterating over the remaining chunks from the middle of the leap window
     // so we need to offset the index
     let index_offset = (total_columns_processed % column_height) * column_height;
@@ -257,10 +297,7 @@ async fn process_remaining_chunks(
             };
 
             let parity = entangle_chunks(chunk, next_chunk);
-            senders[j]
-                .send(Ok(parity))
-                .await
-                .map_err(|_| EntanglementError::SendError)?;
+            senders[j].send(Ok(parity)).await?;
         }
     }
 
@@ -269,10 +306,10 @@ async fn process_remaining_chunks(
 
 async fn process_columns(
     chunk_buffer: &[Bytes],
-    senders: &[mpsc::Sender<Result<Bytes, EntanglementError>>],
+    senders: &[mpsc::Sender<Result<Bytes, Error>>],
     strand_types: &[StrandType],
     column_height: u64,
-) -> Result<(), EntanglementError> {
+) -> Result<(), Error> {
     let column_start = chunk_buffer.len() - 2 * column_height as usize;
     let positioner = Positioner::new(column_height, 2 * column_height);
 
@@ -287,10 +324,7 @@ async fn process_columns(
                 &chunk_buffer[column_start + column_height as usize + next_pos.y as usize];
 
             let parity = entangle_chunks(chunk, next_chunk);
-            senders[j]
-                .send(Ok(parity))
-                .await
-                .map_err(|_| EntanglementError::SendError)?;
+            senders[j].send(Ok(parity)).await?;
         }
     }
 

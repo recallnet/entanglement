@@ -47,6 +47,9 @@ pub enum Error {
     #[error("Failed to parse metadata: {0}")]
     ParsingMetadata(#[from] serde_json::Error),
 
+    #[error("Error during entanglement execution: {0}")]
+    Execution(#[from] executer::Error),
+
     #[error("Error occurred: {0}")]
     Other(#[from] anyhow::Error),
 
@@ -182,10 +185,7 @@ impl<T: Storage> Entangler<T> {
             .with_chunk_size(CHUNK_SIZE as usize);
 
         // Get the parity streams
-        let result = executer
-            .entangle(stream)
-            .await
-            .map_err(|e| Error::Other(e.into()))?;
+        let result = executer.entangle(stream).await?;
 
         let mut parity_hashes = Vec::new();
         let mut upload_results = Vec::new();
