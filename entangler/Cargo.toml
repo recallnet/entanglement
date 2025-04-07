@@ -27,6 +27,8 @@ recall_entangler_storage = { version = "0.1.0", path = "../storage", features = 
 
 [dev-dependencies]
 recall_entangler_storage = { path = "../storage", features = ["mock"] }
+jemallocator = "0.5"
+jemalloc-ctl = "0.5"
 
 [lib]
 doctest = false
@@ -34,3 +36,7 @@ doctest = false
 [[test]]
 name = "entangler_integration_tests"
 path = "tests/entangler_test.rs"
+
+[[test]]
+name = "entangler_performance_tests"
+path = "tests/performance_test.rs"
