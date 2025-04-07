@@ -1,7 +1,7 @@
 // Copyright 2024 Entanglement Contributors
 // SPDX-License-Identifier: Apache-2.0, MIT
 
-use crate::grid::{Dir, Grid, Pos};
+use crate::grid::{Dir, Pos};
 use core::fmt;
 use serde::{Deserialize, Serialize};
 use std;
@@ -138,10 +138,4 @@ impl std::ops::SubAssign<StrandType> for Pos {
         self.x -= 1;
         self.y -= rhs.to_i64();
     }
-}
-
-/// A grid with a strand type.
-pub struct ParityGrid {
-    pub grid: Grid,
-    pub strand_type: StrandType,
 }

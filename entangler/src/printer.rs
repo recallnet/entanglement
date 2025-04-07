@@ -44,7 +44,7 @@ impl fmt::Display for Graph {
 impl<'a> Printer<'a> {
     pub fn new(graph: &'a Graph) -> Self {
         let max_x = graph.nodes.keys().map(|id| id.pos.x).max().unwrap_or(0);
-        let height = graph.positioner.height as i64;
+        let height = graph.positioner.get_height() as i64;
 
         // Calculate buffer size and preallocate
         let buffer_size = Self::calculate_buffer_size(max_x, height);
