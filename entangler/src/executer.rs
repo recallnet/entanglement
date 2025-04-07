@@ -27,19 +27,19 @@ pub struct Executer {
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("Failed to send chunk to channel: {source}")]
-    SendError {
+    Send {
         #[source]
         source: anyhow::Error,
     },
 
     #[error("Input stream error: {source}")]
-    InputError {
+    Input {
         #[source]
         source: anyhow::Error,
     },
 
     #[error("Failed to process chunks: {source}")]
-    ProcessingError {
+    Processing {
         #[source]
         source: anyhow::Error,
     },
@@ -47,7 +47,7 @@ pub enum Error {
 
 impl<T> From<SendError<T>> for Error {
     fn from(err: SendError<T>) -> Self {
-        Error::SendError {
+        Error::Send {
             source: anyhow::anyhow!("Failed to send chunk: {}", err),
         }
     }
@@ -56,13 +56,13 @@ impl<T> From<SendError<T>> for Error {
 impl Clone for Error {
     fn clone(&self) -> Self {
         match self {
-            Error::SendError { source } => Error::SendError {
+            Error::Send { source } => Error::Send {
                 source: anyhow::anyhow!(source.to_string()),
             },
-            Error::InputError { source } => Error::InputError {
+            Error::Input { source } => Error::Input {
                 source: anyhow::anyhow!(source.to_string()),
             },
-            Error::ProcessingError { source } => Error::ProcessingError {
+            Error::Processing { source } => Error::Processing {
                 source: anyhow::anyhow!(source.to_string()),
             },
         }
@@ -178,7 +178,7 @@ where
                                 column_height,
                             )
                             .await
-                            .map_err(|e| Error::ProcessingError {
+                            .map_err(|e| Error::Processing {
                                 source: anyhow::Error::from(e),
                             })?;
                             // Keep only the last column for next iteration
@@ -189,7 +189,7 @@ where
                 }
             }
             Err(e) => {
-                let error = Error::InputError {
+                let error = Error::Input {
                     source: anyhow::Error::from(e),
                 };
                 // The error to be sent through all parity streams because the parity streams
@@ -212,7 +212,7 @@ where
         &strand_types,
     )
     .await
-    .map_err(|e| Error::ProcessingError {
+    .map_err(|e| Error::Processing {
         source: anyhow::Error::from(e),
     })?;
 
@@ -249,7 +249,7 @@ async fn process_remaining_chunks(
                     // if there is no first column, we deal with very short input data that doesn't fit
                     // into a single column, so it's not possible to entangle it and we return the
                     // chunk as is, so it will entangle with itself and produce bytes of zeros
-                    &chunk
+                    chunk
                 }
             } else {
                 let next_index = positioner.pos_to_index(next_pos);
@@ -264,7 +264,7 @@ async fn process_remaining_chunks(
                     let next_pos = positioner.normalize(next_pos.near(strand_type.into(), steps));
                     &first_column[next_pos.y as usize]
                 } else {
-                    &chunk
+                    chunk
                 }
             };
 
@@ -643,13 +643,11 @@ mod tests {
     #[tokio::test]
     async fn test_entangle_error_propagation() {
         // Create a stream that will produce an error after some valid data
-        let mut input_data = Vec::new();
-        input_data.push(Ok(Bytes::from(vec![1, 2, 3, 4, 5, 6, 7, 8])));
-        input_data.push(Ok(Bytes::from(vec![9, 10, 11, 12, 13, 14, 15, 16])));
-        input_data.push(Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "test error",
-        )));
+        let input_data = vec![
+            Ok(Bytes::from(vec![1, 2, 3, 4, 5, 6, 7, 8])),
+            Ok(Bytes::from(vec![9, 10, 11, 12, 13, 14, 15, 16])),
+            Err(std::io::Error::new(std::io::ErrorKind::Other, "test error")),
+        ];
 
         let input_stream = stream::iter(input_data);
 

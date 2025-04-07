@@ -1,6 +1,5 @@
 use bytes::{Bytes, BytesMut};
 use jemalloc_ctl::{epoch, stats};
-use jemallocator;
 use recall_entangler::{Config, Entangler, CHUNK_SIZE};
 use recall_entangler_storage::{mock::StubStorage, UploadResult};
 use std::collections::HashMap;
@@ -8,7 +7,6 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::time::sleep;
 
-// Use jemalloc as the global allocator
 #[global_allocator]
 static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 

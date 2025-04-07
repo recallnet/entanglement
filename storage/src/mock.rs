@@ -495,7 +495,7 @@ impl Storage for StubStorage {
         // Consume the stream before returning result
         use futures::TryStreamExt;
         let mut stream = stream.map_err(|e| StorageError::Other(e.to_string()));
-        while let Some(_) = stream.try_next().await? {}
+        while stream.try_next().await?.is_some() {}
 
         let mut call_count = self.upload_bytes_call_count.lock().unwrap();
         let current_count = *call_count;
