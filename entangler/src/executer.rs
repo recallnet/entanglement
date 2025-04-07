@@ -3,6 +3,7 @@
 
 use crate::grid::Positioner;
 use crate::parity::StrandType;
+use crate::Config;
 use anyhow::Result;
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
@@ -19,6 +20,7 @@ pub struct Executer {
     alpha: u8,
     height: u64,
     chunk_size: usize,
+    channel_buffer_size: usize,
 }
 
 /// A custom error type for entanglement operations
@@ -68,28 +70,20 @@ impl Clone for Error {
 }
 
 impl Executer {
-    /// Create a new executer with the given alpha, i.e. the number of parity streams to create.
-    /// The height of the grid is set to 5 by default.
-    /// The chunk size is set to 1024 by default.
-    pub fn new(alpha: u8) -> Self {
-        Self {
-            alpha,
-            height: 5,
-            chunk_size: 1024,
-        }
-    }
-
-    /// Sets the height of the grid. This is the S parameter for the entanglement, i.e. the number
-    /// of horizontal strands in the grid.
-    pub fn with_height(mut self, height: u64) -> Self {
-        self.height = height;
-        self
-    }
-
     /// Sets the chunk size
     pub fn with_chunk_size(mut self, chunk_size: usize) -> Self {
         self.chunk_size = chunk_size;
         self
+    }
+
+    /// Creates a new executer from a Config
+    pub fn from_config(config: &Config) -> Self {
+        Self {
+            alpha: config.alpha,
+            height: config.s as u64,
+            chunk_size: 1024, // Keep default chunk size
+            channel_buffer_size: config.channel_buffer_size,
+        }
     }
 
     /// Entangles the given input stream, producing `alpha` parity streams in parallel.
@@ -103,7 +97,7 @@ impl Executer {
         let mut senders = Vec::with_capacity(self.alpha as usize);
 
         for _ in 0..self.alpha {
-            let (tx, rx) = mpsc::channel::<Result<Bytes, Error>>(100);
+            let (tx, rx) = mpsc::channel::<Result<Bytes, Error>>(self.channel_buffer_size);
             senders.push(tx);
             receivers.push(rx);
         }
@@ -140,7 +134,7 @@ impl Executer {
 
 /// Processes the input stream and generates parity chunks for each strand type
 async fn process_input_stream<S, E>(
-    mut input: S,
+    mut input_stream: S,
     senders: Vec<mpsc::Sender<Result<Bytes, Error>>>,
     strand_types: Vec<StrandType>,
     column_height: u64,
@@ -156,7 +150,7 @@ where
     let mut total_columns_processed = 0;
 
     // Read chunks from the input stream
-    while let Some(chunk_result) = input.next().await {
+    while let Some(chunk_result) = input_stream.next().await {
         match chunk_result {
             Ok(data) => {
                 let mut data_slice = &data[..];
@@ -339,7 +333,7 @@ mod tests {
         let chunk2 = vec![5, 6, 7, 8];
         let input_stream = create_stream(vec![chunk1.clone(), chunk2.clone()]);
 
-        let executer = Executer::new(3).with_height(1).with_chunk_size(4);
+        let executer = Executer::from_config(&Config::new(3, 1, 1)).with_chunk_size(4);
 
         let result = executer.entangle(input_stream).await.unwrap();
 
@@ -374,7 +368,7 @@ mod tests {
             Err(std::io::Error::new(std::io::ErrorKind::Other, "test error")),
         ]);
 
-        let executer = Executer::new(1).with_height(1).with_chunk_size(4);
+        let executer = Executer::from_config(&Config::new(1, 1, 1)).with_chunk_size(4);
 
         let result = executer.entangle(error_stream).await.unwrap();
 
@@ -407,7 +401,7 @@ mod tests {
         ];
         let input_stream = create_stream(chunks.clone());
 
-        let executer = Executer::new(1).with_height(2).with_chunk_size(4);
+        let executer = Executer::from_config(&Config::new(1, 2, 2)).with_chunk_size(4);
 
         let result = executer.entangle(input_stream).await.unwrap();
 
@@ -474,7 +468,7 @@ mod tests {
                 .map(|chunk| Ok::<_, std::io::Error>(Bytes::from(chunk))),
         );
 
-        let executer = Executer::new(3).with_height(3).with_chunk_size(8);
+        let executer = Executer::from_config(&Config::new(3, 3, 3)).with_chunk_size(8);
 
         let result = executer.entangle(input_stream).await.unwrap();
 
@@ -618,7 +612,7 @@ mod tests {
                 .map(|chunk| Ok::<_, std::io::Error>(Bytes::from(chunk))),
         );
 
-        let executer = Executer::new(2).with_height(4).with_chunk_size(8);
+        let executer = Executer::from_config(&Config::new(2, 4, 4)).with_chunk_size(8);
 
         let result = executer.entangle(input_stream).await.unwrap();
 
@@ -660,7 +654,7 @@ mod tests {
 
         let input_stream = stream::iter(input_data);
 
-        let executer = Executer::new(1).with_height(2).with_chunk_size(4);
+        let executer = Executer::from_config(&Config::new(1, 2, 2)).with_chunk_size(4);
 
         let result = executer.entangle(input_stream).await.unwrap();
 
@@ -746,7 +740,7 @@ mod tests {
                     .map(|chunk| Ok::<_, std::io::Error>(Bytes::from(chunk))),
             );
 
-            let executer = Executer::new(3).with_height(3).with_chunk_size(8);
+            let executer = Executer::from_config(&Config::new(3, 3, 3)).with_chunk_size(8);
 
             let result = executer.entangle(input_stream).await.unwrap();
 

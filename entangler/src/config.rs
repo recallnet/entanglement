@@ -14,6 +14,12 @@ pub struct Config {
     /// (e.g. with range request), set this to `true`.
     /// Default is `true`.
     pub always_repair: bool,
+    /// Channel buffer size for parity streams (default: 10 * 1024)
+    /// This is the number of 1024-bytes chunks that fit into a single parity buffer
+    /// Entangle might produce parity data faster than the storage can upload it,
+    /// but in case the storage is too slow, this buffer will fill up and entangle will block
+    /// until the storage has uploaded some data.
+    pub channel_buffer_size: usize,
 }
 
 impl Default for Config {
@@ -23,6 +29,7 @@ impl Default for Config {
             s: 5,
             p: 5,
             always_repair: true,
+            channel_buffer_size: 10 * 1024,
         }
     }
 }
@@ -47,5 +54,15 @@ impl Config {
             p,
             ..Default::default()
         }
+    }
+
+    /// Sets the channel buffer size for parity streams
+    /// This is the number of 1024-bytes chunks that fit into a single parity buffer
+    /// Entangle might produce parity data faster than the storage can upload it,
+    /// but in case the storage is too slow, this buffer will fill up and entangle will block
+    /// until the storage has uploaded some data.
+    pub fn with_channel_buffer_size(mut self, size: usize) -> Self {
+        self.channel_buffer_size = size;
+        self
     }
 }

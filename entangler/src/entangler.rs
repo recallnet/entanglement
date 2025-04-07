@@ -179,9 +179,8 @@ impl<T: Storage> Entangler<T> {
         E: std::error::Error + Send + Sync + 'static,
     {
         // Create an executer with our configuration
-        let executer = executer::Executer::new(self.config.alpha)
-            .with_height(self.config.s as u64)
-            .with_chunk_size(CHUNK_SIZE as usize);
+        let executer =
+            executer::Executer::from_config(&self.config).with_chunk_size(CHUNK_SIZE as usize);
 
         let parity_streams = executer.entangle(stream).await?;
 
@@ -500,6 +499,7 @@ mod tests {
         let entangler = result.unwrap();
         assert_eq!(entangler.config.alpha, 3);
         assert_eq!(entangler.config.s, 2);
+        assert_eq!(entangler.config.p, 4);
     }
 
     #[test]
@@ -554,6 +554,7 @@ mod tests {
         let entangler = result.unwrap();
         assert_eq!(entangler.config.alpha, 3);
         assert_eq!(entangler.config.s, 2);
+        assert_eq!(entangler.config.p, 0);
     }
 
     #[test]
