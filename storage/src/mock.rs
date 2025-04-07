@@ -342,13 +342,9 @@ impl Storage for DummyStorage {
         S: Stream<Item = Result<Bytes, E>> + Send + Unpin,
         E: std::error::Error + Send + Sync + 'static,
     {
-        // Just create a fixed response for the dummy storage
-        let mut info = std::collections::HashMap::new();
-        info.insert("mock_info".to_string(), "dummy_storage".to_string());
-
         Ok(UploadResult {
             hash: "dummy_hash".to_string(),
-            info,
+            info: std::collections::HashMap::new(),
             size: 10, // Fixed dummy size
         })
     }
@@ -387,7 +383,8 @@ impl Storage for DummyStorage {
 
 #[derive(Clone)]
 pub struct StubStorage {
-    upload_bytes_result: Result<UploadResult, StorageError>,
+    upload_bytes_results: Vec<Result<UploadResult, StorageError>>,
+    upload_bytes_call_count: Arc<Mutex<usize>>,
     download_bytes_results: HashMap<Option<String>, Vec<Result<Bytes, StorageError>>>,
     download_bytes_call_count: Arc<Mutex<HashMap<Option<String>, usize>>>,
     iter_chunks_result: Vec<(u64, Result<Bytes, StorageError>)>,
@@ -401,12 +398,15 @@ impl Default for StubStorage {
         let mut info = std::collections::HashMap::new();
         info.insert("mock_info".to_string(), "stub_storage".to_string());
 
+        let default_result = Ok(UploadResult {
+            hash: "dummy_hash".to_string(),
+            info,
+            size: 0,
+        });
+
         Self {
-            upload_bytes_result: Ok(UploadResult {
-                hash: "dummy_hash".to_string(),
-                info,
-                size: 0,
-            }),
+            upload_bytes_results: vec![default_result],
+            upload_bytes_call_count: Arc::new(Mutex::new(0)),
             download_bytes_results: HashMap::new(),
             download_bytes_call_count: Arc::new(Mutex::new(HashMap::new())),
             iter_chunks_result: vec![(0, Ok(Bytes::from("dummy data")))],
@@ -418,8 +418,23 @@ impl Default for StubStorage {
 }
 
 impl StubStorage {
+    /// Stub a response for upload_bytes method that will be used for all calls
     pub fn stub_upload_bytes(&mut self, result: Result<UploadResult, StorageError>) {
-        self.upload_bytes_result = result;
+        self.upload_bytes_results = vec![result];
+    }
+
+    /// Stub responses for upload_bytes method for specific call numbers
+    ///
+    /// # Arguments
+    ///
+    /// * `results` - A vector of results to return for each call in sequence
+    ///
+    /// The first result will be returned for the first call, second for the second, etc.
+    /// If more calls are made than results provided, the last result will be repeated.
+    pub fn stub_upload_bytes_sequence(&mut self, results: Vec<Result<UploadResult, StorageError>>) {
+        if !results.is_empty() {
+            self.upload_bytes_results = results;
+        }
     }
 
     /// Stub a response for download_bytes method
@@ -472,12 +487,23 @@ impl Storage for StubStorage {
     type ChunkId = u64;
     type ChunkIdMapper = DummyChunkIdMapper;
 
-    async fn upload_bytes<S, E>(&self, _stream: S) -> Result<UploadResult, StorageError>
+    async fn upload_bytes<S, E>(&self, stream: S) -> Result<UploadResult, StorageError>
     where
-        S: Stream<Item = Result<Bytes, E>> + Send + Unpin,
+        S: Stream<Item = Result<Bytes, E>> + Send + Unpin + 'static,
         E: std::error::Error + Send + Sync + 'static,
     {
-        self.upload_bytes_result.clone()
+        // Consume the stream before returning result
+        use futures::TryStreamExt;
+        let mut stream = stream.map_err(|e| StorageError::Other(e.to_string()));
+        while let Some(_) = stream.try_next().await? {}
+
+        let mut call_count = self.upload_bytes_call_count.lock().unwrap();
+        let current_count = *call_count;
+        *call_count += 1;
+
+        // Get the result for this call number, or use the last result if we've exceeded the number of stubs
+        let result_index = current_count.min(self.upload_bytes_results.len() - 1);
+        self.upload_bytes_results[result_index].clone()
     }
 
     async fn download_bytes(&self, hash: &str) -> Result<ByteStream, StorageError> {
@@ -497,8 +523,13 @@ impl Storage for StubStorage {
             } else {
                 results.len() - 1
             };
-            let result = results[idx].clone()?;
-            Ok(Box::pin(futures::stream::once(ready(Ok(result)))))
+            // Normal stream
+            let chunks = results[idx]
+                .clone()?
+                .chunks(CHUNK_SIZE)
+                .map(|chunk| Ok(Bytes::copy_from_slice(chunk)))
+                .collect::<Vec<_>>();
+            Ok(Box::pin(futures::stream::iter(chunks)))
         } else {
             // Default fallback if no stub provided
             Ok(Box::pin(futures::stream::once(ready(Ok(Bytes::from(
