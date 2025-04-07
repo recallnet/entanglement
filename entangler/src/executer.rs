@@ -8,7 +8,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use std::pin::Pin;
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::{self, error::SendError};
 use tokio_stream::wrappers::ReceiverStream;
 
 /// Stream type for handling bytes with possible errors
@@ -45,8 +45,8 @@ pub enum Error {
     },
 }
 
-impl<T> From<tokio::sync::mpsc::error::SendError<T>> for Error {
-    fn from(err: tokio::sync::mpsc::error::SendError<T>) -> Self {
+impl<T> From<SendError<T>> for Error {
+    fn from(err: SendError<T>) -> Self {
         Error::SendError {
             source: anyhow::anyhow!("Failed to send chunk: {}", err),
         }
@@ -149,7 +149,6 @@ where
     let mut first_column: Option<Vec<Bytes>> = None;
     let mut total_columns_processed = 0;
 
-    // Read chunks from the input stream
     while let Some(chunk_result) = input_stream.next().await {
         match chunk_result {
             Ok(data) => {
@@ -233,7 +232,7 @@ async fn process_remaining_chunks(
     strand_types: &[StrandType],
 ) -> Result<(), Error> {
     // we might start iterating over the remaining chunks from the middle of the leap window
-    // so we need to offset the index
+    // (i.e. from the second or the third column), so we need to offset the index
     let index_offset = (total_columns_processed % column_height) * column_height;
     let positioner = Positioner::new(column_height, index_offset + chunk_buffer.len() as u64);
 
@@ -403,24 +402,24 @@ mod tests {
 
         let executer = Executer::from_config(&Config::new(1, 2, 2)).with_chunk_size(4);
 
-        let result = executer.entangle(input_stream).await.unwrap();
+        let parity_streams = executer.entangle(input_stream).await.unwrap();
 
-        assert_eq!(result.len(), 1);
+        assert_eq!(parity_streams.len(), 1);
 
-        let mut stream = result.into_iter().next().unwrap();
-        let mut parity_chunks = Vec::new();
+        for mut stream in parity_streams.into_iter() {
+            let mut parity_chunks = Vec::new();
 
-        while let Some(result) = stream.next().await {
-            parity_chunks.push(result.unwrap().to_vec());
+            while let Some(result) = stream.next().await {
+                parity_chunks.push(result.unwrap().to_vec());
+            }
+
+            assert!(
+                parity_chunks.len() == chunks.len(),
+                "Expected {} parity chunks but got {}",
+                chunks.len(),
+                parity_chunks.len()
+            );
         }
-
-        // We should get at least chunks.len() - 1 parity chunks
-        assert!(
-            parity_chunks.len() >= chunks.len() - 1,
-            "Expected at least {} parity chunks but got {}",
-            chunks.len() - 1,
-            parity_chunks.len()
-        );
     }
 
     #[test]

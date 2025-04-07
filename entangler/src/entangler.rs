@@ -157,11 +157,9 @@ impl<T: Storage> Entangler<T> {
     {
         let mut upload_results = Vec::new();
 
-        // First upload the original data to get its hash
         let orig_upload_result = self.storage.upload_bytes(stream).await?;
         upload_results.push(orig_upload_result.clone());
 
-        // Now entangle the uploaded data
         let mut entanglement_result = self
             .entangle_uploaded(orig_upload_result.hash.clone())
             .await?;
@@ -178,7 +176,6 @@ impl<T: Storage> Entangler<T> {
         S: Stream<Item = Result<Bytes, E>> + Send + Unpin + 'static,
         E: std::error::Error + Send + Sync + 'static,
     {
-        // Create an executer with our configuration
         let executer =
             executer::Executer::from_config(&self.config).with_chunk_size(CHUNK_SIZE as usize);
 

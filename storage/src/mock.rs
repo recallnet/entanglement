@@ -523,7 +523,6 @@ impl Storage for StubStorage {
             } else {
                 results.len() - 1
             };
-            // Normal stream
             let chunks = results[idx]
                 .clone()?
                 .chunks(CHUNK_SIZE)

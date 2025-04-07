@@ -23,7 +23,6 @@ fn get_memory_usage() -> u64 {
     std::cmp::max(allocated, resident)
 }
 
-// Helper function to generate test data directly into a buffer
 fn generate_test_data(size_mb: usize) -> Bytes {
     let total_size = size_mb * 1024 * 1024;
     let num_chunks = total_size / CHUNK_SIZE as usize;
@@ -70,7 +69,7 @@ async fn test_entanglement_memory_consumption() {
 
     upload_results.push(Ok(UploadResult {
         hash: "metadata_hash".to_string(),
-        size: 1024, // Small metadata size
+        size: 1024,
         info: HashMap::new(),
     }));
 
@@ -86,7 +85,7 @@ async fn test_entanglement_memory_consumption() {
 
     let (stop_tx, stop_rx) = oneshot::channel();
 
-    // Spawn a task to monitor memory usage with higher frequency
+    // Spawn a task to monitor memory usage
     let memory_monitor = tokio::spawn(async move {
         let mut max_memory = 0;
         let mut stop_rx = stop_rx;
