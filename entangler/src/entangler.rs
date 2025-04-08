@@ -106,14 +106,12 @@ impl ChunkRange {
 }
 
 impl<T: Storage> Entangler<T> {
-    /// Creates a new `Entangler` instance with the given storage backend, alpha, s, and p parameters.
+    /// Creates a new `Entangler` instance with the given storage backend and configuration.
     ///
     /// # Arguments
     ///
     /// * `storage` - The storage backend to use.
-    /// * `alpha` - The number of parity chunks to generate for each data chunk. It should be from 1 to 3.
-    /// * `s` - The number of horizontal strands in the grid. It should be larger than 0.
-    /// * `p` - The number of helical strands in the grid.
+    /// * `conf` - The configuration to use.
     ///
     /// # Returns
     ///
@@ -126,12 +124,6 @@ impl<T: Storage> Entangler<T> {
                 (if conf.s == 0 { "s" } else { "alpha" }).to_string(),
                 if conf.s == 0 { conf.s } else { conf.alpha },
             ));
-        }
-        // at the moment it's not clear how to take a helical strand around the cylinder so that
-        // it completes a revolution after LW on the same horizontal strand. That's why
-        // p should be a multiple of s.
-        if conf.p != 0 && (conf.p < conf.s || conf.p % conf.s != 0) {
-            return Err(Error::InvalidEntanglementParameter("p".to_string(), conf.p));
         }
         Ok(Self {
             storage,
@@ -491,18 +483,17 @@ mod tests {
     #[test]
     fn test_entangler_new_valid_parameters() {
         let storage = DummyStorage;
-        let result = Entangler::new(storage, Config::new(3, 2, 4));
+        let result = Entangler::new(storage, Config::new(3, 2));
         assert!(result.is_ok());
         let entangler = result.unwrap();
         assert_eq!(entangler.config.alpha, 3);
         assert_eq!(entangler.config.s, 2);
-        assert_eq!(entangler.config.p, 4);
     }
 
     #[test]
     fn test_entangler_new_alpha_zero() {
         let storage = DummyStorage;
-        let result = Entangler::new(storage, Config::new(0, 2, 4));
+        let result = Entangler::new(storage, Config::new(0, 2));
         assert!(result.is_err());
         assert!(matches!(
             result.err().unwrap(),
@@ -513,7 +504,7 @@ mod tests {
     #[test]
     fn test_entangler_new_alpha_too_large() {
         let storage = DummyStorage;
-        let result = Entangler::new(storage, Config::new(4, 2, 4));
+        let result = Entangler::new(storage, Config::new(4, 2));
         assert!(result.is_err());
         assert!(matches!(
             result.err().unwrap(),
@@ -524,55 +515,12 @@ mod tests {
     #[test]
     fn test_entangler_new_s_zero() {
         let storage = DummyStorage;
-        let result = Entangler::new(storage, Config::new(3, 0, 4));
+        let result = Entangler::new(storage, Config::new(3, 0));
         assert!(result.is_err());
         assert!(matches!(
             result.err().unwrap(),
             Error::InvalidEntanglementParameter(param, value) if param == "s" && value == 0
         ));
-    }
-
-    #[test]
-    fn test_entangler_new_p_less_than_s() {
-        let storage = DummyStorage;
-        let result = Entangler::new(storage, Config::new(3, 4, 2));
-        assert!(result.is_err());
-        assert!(matches!(
-            result.err().unwrap(),
-            Error::InvalidEntanglementParameter(param, value) if param == "p" && value == 2
-        ));
-    }
-
-    #[test]
-    fn test_entangler_new_p_not_multiple_of_s() {
-        let storage = DummyStorage;
-        let result = Entangler::new(storage, Config::new(3, 3, 7));
-        assert!(result.is_err());
-        assert!(matches!(
-            result.err().unwrap(),
-            Error::InvalidEntanglementParameter(param, value) if param == "p" && value == 7
-        ));
-    }
-
-    #[test]
-    fn test_entangler_new_p_zero() {
-        let storage = DummyStorage;
-        let result = Entangler::new(storage, Config::new(3, 2, 0));
-        assert!(result.is_ok());
-        let entangler = result.unwrap();
-        assert_eq!(entangler.config.alpha, 3);
-        assert_eq!(entangler.config.s, 2);
-        assert_eq!(entangler.config.p, 0);
-    }
-
-    #[test]
-    fn test_entangler_new_p_valid_multiple_of_s() {
-        let storage = DummyStorage;
-        let result = Entangler::new(storage, Config::new(3, 2, 6));
-        assert!(result.is_ok());
-        let entangler = result.unwrap();
-        assert_eq!(entangler.config.alpha, 3);
-        assert_eq!(entangler.config.s, 2);
     }
 
     #[tokio::test]
@@ -610,7 +558,7 @@ mod tests {
         let json = serde_json::json!(metadata).to_string();
         storage.stub_download_bytes(Some(m_hash.clone()), Ok(Bytes::from(json)));
 
-        let entangler = Entangler::new(storage.clone(), Config::new(3, 3, 3)).unwrap();
+        let entangler = Entangler::new(storage.clone(), Config::new(3, 3)).unwrap();
 
         let result = entangler.download(&hash, Some(&m_hash)).await;
         assert!(result.is_ok());

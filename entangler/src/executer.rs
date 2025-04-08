@@ -332,7 +332,7 @@ mod tests {
         let chunk2 = vec![5, 6, 7, 8];
         let input_stream = create_stream(vec![chunk1.clone(), chunk2.clone()]);
 
-        let executer = Executer::from_config(&Config::new(3, 1, 1)).with_chunk_size(4);
+        let executer = Executer::from_config(&Config::new(3, 1)).with_chunk_size(4);
 
         let result = executer.entangle(input_stream).await.unwrap();
 
@@ -367,7 +367,7 @@ mod tests {
             Err(std::io::Error::new(std::io::ErrorKind::Other, "test error")),
         ]);
 
-        let executer = Executer::from_config(&Config::new(1, 1, 1)).with_chunk_size(4);
+        let executer = Executer::from_config(&Config::new(1, 1)).with_chunk_size(4);
 
         let result = executer.entangle(error_stream).await.unwrap();
 
@@ -400,7 +400,7 @@ mod tests {
         ];
         let input_stream = create_stream(chunks.clone());
 
-        let executer = Executer::from_config(&Config::new(1, 2, 2)).with_chunk_size(4);
+        let executer = Executer::from_config(&Config::new(1, 2)).with_chunk_size(4);
 
         let parity_streams = executer.entangle(input_stream).await.unwrap();
 
@@ -467,7 +467,7 @@ mod tests {
                 .map(|chunk| Ok::<_, std::io::Error>(Bytes::from(chunk))),
         );
 
-        let executer = Executer::from_config(&Config::new(3, 3, 3)).with_chunk_size(8);
+        let executer = Executer::from_config(&Config::new(3, 3)).with_chunk_size(8);
 
         let result = executer.entangle(input_stream).await.unwrap();
 
@@ -611,7 +611,7 @@ mod tests {
                 .map(|chunk| Ok::<_, std::io::Error>(Bytes::from(chunk))),
         );
 
-        let executer = Executer::from_config(&Config::new(2, 4, 4)).with_chunk_size(8);
+        let executer = Executer::from_config(&Config::new(2, 4)).with_chunk_size(8);
 
         let result = executer.entangle(input_stream).await.unwrap();
 
@@ -651,7 +651,7 @@ mod tests {
 
         let input_stream = stream::iter(input_data);
 
-        let executer = Executer::from_config(&Config::new(1, 2, 2)).with_chunk_size(4);
+        let executer = Executer::from_config(&Config::new(1, 2)).with_chunk_size(4);
 
         let result = executer.entangle(input_stream).await.unwrap();
 
@@ -737,7 +737,7 @@ mod tests {
                     .map(|chunk| Ok::<_, std::io::Error>(Bytes::from(chunk))),
             );
 
-            let executer = Executer::from_config(&Config::new(3, 3, 3)).with_chunk_size(8);
+            let executer = Executer::from_config(&Config::new(3, 3)).with_chunk_size(8);
 
             let result = executer.entangle(input_stream).await.unwrap();
 

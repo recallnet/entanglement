@@ -79,7 +79,7 @@ async fn test_entanglement_memory_consumption() {
 
     let initial_memory = get_memory_usage();
 
-    let entangler = Entangler::new(storage, Config::new(3, 3, 3)).unwrap();
+    let entangler = Entangler::new(storage, Config::new(3, 3)).unwrap();
 
     let (stop_tx, stop_rx) = oneshot::channel();
 

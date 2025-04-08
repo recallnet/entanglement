@@ -5,8 +5,6 @@ pub struct Config {
     pub alpha: u8,
     /// The number of horizontal strands in the grid. It should be larger than 0.
     pub s: u8,
-    /// The number of helical strands in the grid.
-    pub p: u8,
     /// Specifies whether to always try to heal blobs.
     /// If set to `false`, the entangler will try to repair and consequently upload the entire blob
     /// only when the whole blob was requested.
@@ -27,7 +25,6 @@ impl Default for Config {
         Self {
             alpha: 3,
             s: 5,
-            p: 5,
             always_repair: true,
             channel_buffer_size: 10 * 1024,
         }
@@ -40,18 +37,16 @@ impl Config {
     ///
     /// # Arguments
     ///
-    /// * `alpha` - The number of parity chunks to generate for each data chunk.
-    /// * `s` - The number of horizontal strands in the grid.
-    /// * `p` - The number of helical strands in the grid.
+    /// * `alpha` - The number of parity chunks to generate for each data chunk. It should be from 1 to 3.
+    /// * `s` - The number of horizontal strands in the grid. It should be larger than 0.
     ///
     /// # Returns
     ///
     /// A new `Config` with the given parameters.
-    pub fn new(alpha: u8, s: u8, p: u8) -> Self {
+    pub fn new(alpha: u8, s: u8) -> Self {
         Config {
             alpha,
             s,
-            p,
             ..Default::default()
         }
     }

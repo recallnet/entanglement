@@ -43,7 +43,7 @@ fn new_entangler_from_node<S: iroh::blobs::store::Store>(
     node: &iroh::node::Node<S>,
 ) -> Result<Entangler<IrohStorage>, recall_entangler::Error> {
     let st = IrohStorage::from_client(node.client().clone());
-    Entangler::new(st, Config::new(3, HEIGHT as u8, HEIGHT as u8))
+    Entangler::new(st, Config::new(3, HEIGHT as u8))
 }
 
 async fn load_parity_data_to_node<S>(
@@ -210,10 +210,7 @@ async fn if_blob_is_missing_and_metadata_is_provided_error() -> Result<()> {
 #[tokio::test]
 async fn if_chunk_is_missing_and_metadata_is_provided_should_repair() -> Result<()> {
     let mock_storage = FakeStorage::new();
-    let ent = Entangler::new(
-        mock_storage.clone(),
-        Config::new(3, HEIGHT as u8, HEIGHT as u8),
-    )?;
+    let ent = Entangler::new(mock_storage.clone(), Config::new(3, HEIGHT as u8))?;
 
     let bytes = create_bytes(NUM_CHUNKS);
     let byte_stream = bytes_to_stream(bytes.clone());
@@ -234,10 +231,7 @@ async fn if_chunk_is_missing_and_metadata_is_provided_should_repair() -> Result<
 #[tokio::test]
 async fn if_stream_fails_and_metadata_is_not_provided_should_error() -> Result<()> {
     let mock_storage = FakeStorage::new();
-    let ent = Entangler::new(
-        mock_storage.clone(),
-        Config::new(3, HEIGHT as u8, HEIGHT as u8),
-    )?;
+    let ent = Entangler::new(mock_storage.clone(), Config::new(3, HEIGHT as u8))?;
 
     let bytes = create_bytes(2); // Creates 2048 bytes (2 chunks)
     let byte_stream = bytes_to_stream(bytes.clone());
@@ -319,10 +313,7 @@ async fn if_stream_fails_should_repair_and_continue_where_left_off() -> Result<(
     for case in test_cases {
         println!("Running test case: {}", case.name);
         let mock_storage = FakeStorage::new();
-        let ent = Entangler::new(
-            mock_storage.clone(),
-            Config::new(3, HEIGHT as u8, HEIGHT as u8),
-        )?;
+        let ent = Entangler::new(mock_storage.clone(), Config::new(3, HEIGHT as u8))?;
 
         let bytes = create_bytes(case.num_chunks);
         let byte_stream = bytes_to_stream(bytes.clone());
@@ -666,10 +657,7 @@ async fn test_download_blob_and_repair_scenarios() -> Result<()> {
             );
 
             let mock_storage = FakeStorage::new();
-            let ent = Entangler::new(
-                mock_storage.clone(),
-                Config::new(3, HEIGHT as u8, HEIGHT as u8),
-            )?;
+            let ent = Entangler::new(mock_storage.clone(), Config::new(3, HEIGHT as u8))?;
 
             let bytes = create_bytes(NUM_CHUNKS);
 
@@ -846,10 +834,7 @@ async fn test_download_chunks_range_and_repair_scenarios() -> Result<()> {
                 );
 
                 let mock_storage = FakeStorage::new();
-                let ent = Entangler::new(
-                    mock_storage.clone(),
-                    Config::new(3, HEIGHT as u8, HEIGHT as u8),
-                )?;
+                let ent = Entangler::new(mock_storage.clone(), Config::new(3, HEIGHT as u8))?;
 
                 let bytes = create_bytes(NUM_CHUNKS);
                 let byte_stream = bytes_to_stream(bytes.clone());
@@ -1000,7 +985,7 @@ async fn if_download_fails_it_should_upload_to_storage_after_repair() -> Result<
         let storage = FakeStorage::new();
         let upload_result = storage.upload_bytes(bytes_to_stream(bytes.clone())).await?;
 
-        let mut conf = Config::new(3, 3, 3);
+        let mut conf = Config::new(3, 3);
         conf.always_repair = t.always_repair;
         let ent = Entangler::new(storage.clone(), conf).unwrap();
         let result = ent.entangle_uploaded(upload_result.hash.clone()).await?;
@@ -1112,7 +1097,7 @@ async fn test_upload_and_download_small_file() -> Result<()> {
             );
 
             let storage = FakeStorage::new();
-            let ent = Entangler::new(storage.clone(), Config::new(3, 5, 5))?;
+            let ent = Entangler::new(storage.clone(), Config::new(3, 5))?;
 
             let byte_stream = bytes_to_stream(case.data.clone());
             let result = ent.upload(byte_stream).await?;
@@ -1148,7 +1133,7 @@ async fn test_upload_and_download_small_file() -> Result<()> {
 #[ignore]
 async fn test_upload_and_repair_small_file() -> Result<()> {
     let storage = FakeStorage::new();
-    let ent = Entangler::new(storage.clone(), Config::new(3, 5, 5))?;
+    let ent = Entangler::new(storage.clone(), Config::new(3, 5))?;
 
     let bytes = Bytes::from_static(b"small chunk");
     let byte_stream = bytes_to_stream(bytes.clone());
@@ -1179,7 +1164,7 @@ async fn test_upload_and_repair_small_file() -> Result<()> {
 #[tokio::test]
 async fn test_metadata_fields() -> Result<()> {
     let storage = FakeStorage::new();
-    let ent = Entangler::new(storage.clone(), Config::new(3, HEIGHT as u8, HEIGHT as u8))?;
+    let ent = Entangler::new(storage.clone(), Config::new(3, HEIGHT as u8))?;
     let bytes = create_bytes(NUM_CHUNKS);
 
     for method in ["upload", "entangle_uploaded"] {
@@ -1226,7 +1211,7 @@ async fn test_metadata_fields() -> Result<()> {
 #[tokio::test]
 async fn test_deterministic_metadata_hash() -> Result<()> {
     let storage = FakeStorage::new();
-    let ent = Entangler::new(storage.clone(), Config::new(3, HEIGHT as u8, HEIGHT as u8))?;
+    let ent = Entangler::new(storage.clone(), Config::new(3, HEIGHT as u8))?;
     let bytes = create_bytes(NUM_CHUNKS);
 
     // Generate the first metadata hash

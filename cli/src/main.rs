@@ -122,7 +122,7 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let entangler = Entangler::new(storage, Config::new(3, 3, 3))?;
+    let entangler = Entangler::new(storage, Config::new(3, 3))?;
 
     match cli.command {
         Commands::Upload(args) => {
