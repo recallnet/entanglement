@@ -6,10 +6,10 @@ resolver = "2"
 authors = ["Entanglement Contributors"]
 description = "Alpha entanglement codes for robust error correction and data availability in distributed systems."
 edition = "2021"
-homepage = "https://github.com/textileio/entanglement"
+homepage = "https://github.com/recallnet/entanglement"
 license = "MIT OR Apache-2.0"
 readme = "./README.md"
-repository = "https://github.com/textileio/entanglement"
+repository = "https://github.com/recallnet/entanglement"
 keywords = ["recall", "alpha-entanglement", "data-availability"]
 version = "0.1.0"
 
