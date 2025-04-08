@@ -1,9 +1,9 @@
 /// Configuration for the entangler.
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// The number of parity chunks to generate for each data chunk.
+    /// The number of parity chunks to generate for each data chunk. It should be from 1 to 3.
     pub alpha: u8,
-    /// The number of horizontal strands in the grid.
+    /// The number of horizontal strands in the grid. It should be larger than 0.
     pub s: u8,
     /// The number of helical strands in the grid.
     pub p: u8,

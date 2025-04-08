@@ -111,8 +111,8 @@ impl<T: Storage> Entangler<T> {
     /// # Arguments
     ///
     /// * `storage` - The storage backend to use.
-    /// * `alpha` - The number of parity chunks to generate for each data chunk.
-    /// * `s` - The number of horizontal strands in the grid.
+    /// * `alpha` - The number of parity chunks to generate for each data chunk. It should be from 1 to 3.
+    /// * `s` - The number of horizontal strands in the grid. It should be larger than 0.
     /// * `p` - The number of helical strands in the grid.
     ///
     /// # Returns
@@ -121,10 +121,10 @@ impl<T: Storage> Entangler<T> {
     ///
     /// See also [storage]
     pub fn new(storage: T, conf: Config) -> Result<Self, Error> {
-        if conf.alpha == 0 || conf.s == 0 {
+        if conf.alpha == 0 || conf.alpha > 3 || conf.s == 0 {
             return Err(Error::InvalidEntanglementParameter(
-                (if conf.alpha == 0 { "alpha" } else { "s" }).to_string(),
-                if conf.alpha == 0 { conf.alpha } else { conf.s },
+                (if conf.s == 0 { "s" } else { "alpha" }).to_string(),
+                if conf.s == 0 { conf.s } else { conf.alpha },
             ));
         }
         // at the moment it's not clear how to take a helical strand around the cylinder so that
@@ -507,6 +507,17 @@ mod tests {
         assert!(matches!(
             result.err().unwrap(),
             Error::InvalidEntanglementParameter(param, value) if param == "alpha" && value == 0
+        ));
+    }
+
+    #[test]
+    fn test_entangler_new_alpha_too_large() {
+        let storage = DummyStorage;
+        let result = Entangler::new(storage, Config::new(4, 2, 4));
+        assert!(result.is_err());
+        assert!(matches!(
+            result.err().unwrap(),
+            Error::InvalidEntanglementParameter(param, value) if param == "alpha" && value == 4
         ));
     }
 
