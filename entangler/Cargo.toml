@@ -29,9 +29,7 @@ recall_entangler_storage = { version = "0.1.0", path = "../storage", features = 
 recall_entangler_storage = { path = "../storage", features = ["mock"] }
 jemallocator = "0.5"
 jemalloc-ctl = "0.5"
-
-[lib]
-doctest = false
+tokio-util = { version = "0.7", features = ["io"] }
 
 [[test]]
 name = "entangler_integration_tests"

@@ -23,14 +23,9 @@ Alpha Entanglement works by:
 
 1. **Chunking**: Dividing input data into fixed-size chunks (1024 bytes by default)
 2. **Grid Arrangement**: Organizing chunks in a 2D grid layout
-3. **Strand Generation**: Creating three types of strands (Left, Horizontal, Right) that define XOR relationships
+3. **Strand Generation**: Creating up to three types of strands (Left, Horizontal, Right) that define XOR relationships
 4. **Parity Creation**: Generating alpha parity chunks for each data chunk using these strand relationships
 5. **Metadata Storage**: Preserving configuration and relationship information for recovery
-
-The configurable parameters include:
-- `alpha`: Number of parity chunks per data chunk
-- `s`: Number of horizontal rows in the grid
-- `p`: Number of helical strands in the grid
 
 ## Installation
 
@@ -40,7 +35,6 @@ Add the library to your project:
 [dependencies]
 recall_entangler = { git = "https://github.com/recallnet/entanglement.git" }
 recall_entangler_storage = { package = "recall_entangler_storage", git = "https://github.com/recallnet/entanglement.git" }
-#
 ```
 
 ## Quick Start
@@ -48,6 +42,8 @@ recall_entangler_storage = { package = "recall_entangler_storage", git = "https:
 ```rust
 use recall_entangler::{Config, Entangler};
 use recall_entangler_storage::iroh::IrohStorage;
+use tokio::fs::File;
+use tokio_util::io::ReaderStream;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -57,24 +53,11 @@ async fn main() -> anyhow::Result<()> {
     // Initialize entangler with configuration
     let entangler = Entangler::new(storage, Config::new(3, 3))?;
     
+    // Open file and create a stream
+    let file = File::open("path/to/your/file.txt").await?;
+    let input_stream = ReaderStream::new(file);
+    
     // Upload and entangle data
-    let input_data = vec![
-        vec![1, 1, 1, 1, 1, 1, 1, 1], 
-        vec![2, 2, 2, 2, 2, 2, 2, 2], 
-        vec![3, 3, 3, 3, 3, 3, 3, 3], 
-        vec![4, 4, 4, 4, 4, 4, 4, 4], 
-        vec![5, 5, 5, 5, 5, 5, 5, 5], 
-        vec![6, 6, 6, 6, 6, 6, 6, 6], 
-        vec![7, 7, 7, 7, 7, 7, 7, 7], 
-        vec![8, 8, 8, 8, 8, 8, 8, 8], 
-        vec![9, 9, 9, 9, 9, 9, 9, 9], 
-    ];
-    let input_stream = stream::iter(
-        input_data
-            .into_iter()
-            .map(|chunk| Ok::<_, std::io::Error>(Bytes::from(chunk))),
-    );
-
     let result = entangler.upload(input_stream).await?;
     
     println!("Original hash: {}", result.orig_hash);
@@ -142,9 +125,8 @@ The three key parameters allow fine-tuning the redundancy and recoverability:
 
 - **alpha (α)**: Influences the total storage overhead. Higher values create more parity chunks, providing greater redundancy but requiring more storage space.
 - **s**: Determines the grid height (number of rows). Affects the "spread" of relationships between chunks.
-- **p**: Controls the helical strand pattern. Influences how diagonal relationships are formed.
 
-A typical starting configuration is α=3, s=5, p=5, which creates a balanced trade-off between redundancy and storage overhead.
+A typical starting configuration is α=3, s=5 which creates a balanced trade-off between redundancy and storage overhead.
 
 ## Performance
 
@@ -174,6 +156,10 @@ cargo test --locked --workspace
 # Generate docs
 cargo doc --locked --no-deps --workspace --open
 ```
+
+## Papers
+- [Alpha Entanglement Codes: Practical Erasure Codes to Archive Data in Unreliable Environments](https://ieeexplore.ieee.org/document/8416482)
+- [Snarl: entangled merkle trees for improved file availability and storage utilization](https://dl.acm.org/doi/abs/10.1145/3464298.3493397)
 
 ## License
 
