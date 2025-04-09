@@ -4,10 +4,12 @@
 use anyhow::Result;
 use bytes::{BufMut, Bytes, BytesMut};
 use futures::StreamExt;
+use iroh::protocol::Router;
+use iroh::NodeAddr;
+use iroh_blobs::rpc::client::blobs::MemClient as BlobsClient;
 use recall_entangler::{self, parity::StrandType, ChunkRange, Config, Entangler, Metadata};
 use recall_entangler_storage::{
-    self, iroh::IrohStorage, mock::FakeStorage, ByteStream, ChunkIdMapper, Error as StorageError,
-    Storage,
+    self, mock::FakeStorage, ByteStream, ChunkIdMapper, Error as StorageError, Storage,
 };
 use std::collections::HashSet;
 use std::str::FromStr;
@@ -39,34 +41,31 @@ fn xor_chunks(chunk1: &[u8], chunk2: &[u8]) -> Bytes {
     res.freeze()
 }
 
-fn new_entangler_from_node<S: iroh::blobs::store::Store>(
-    node: &iroh::node::Node<S>,
-) -> Result<Entangler<IrohStorage>, recall_entangler::Error> {
-    let st = IrohStorage::from_client(node.client().clone());
+fn new_entangler_from_client(
+    client: &BlobsClient,
+) -> Result<Entangler<recall_entangler_storage::iroh::IrohStorage>, recall_entangler::Error> {
+    let st = recall_entangler_storage::iroh::IrohStorage::from_client(client.boxed());
     Entangler::new(st, Config::new(3, HEIGHT as u8, HEIGHT as u8))
 }
 
-async fn load_parity_data_to_node<S>(
-    target_node: &iroh::node::Node<S>,
-    source_node: &iroh::node::Node<S>,
+async fn load_parity_data_to_node(
+    target_node: &BlobsClient,
+    source_addr: NodeAddr,
     metadata_hash: &str,
 ) -> Result<()> {
-    let metadata_hash = iroh::blobs::Hash::from_str(metadata_hash)?;
+    let metadata_hash = iroh_blobs::Hash::from_str(metadata_hash)?;
 
-    let node_addr = source_node.net().node_addr().await?;
     target_node
-        .blobs()
-        .download(metadata_hash, node_addr.clone())
+        .download(metadata_hash, source_addr.clone())
         .await?
         .await?;
 
-    let metadata_bytes = target_node.blobs().read_to_bytes(metadata_hash).await?;
+    let metadata_bytes = target_node.read_to_bytes(metadata_hash).await?;
     let metadata: Metadata = serde_json::from_slice(&metadata_bytes)?;
     for parity_hash_str in &metadata.parity_hashes {
-        let parity_hash = iroh::blobs::Hash::from_str(parity_hash_str)?;
+        let parity_hash = iroh_blobs::Hash::from_str(parity_hash_str)?;
         target_node
-            .blobs()
-            .download(parity_hash, node_addr.clone())
+            .download(parity_hash, source_addr.clone())
             .await?
             .await?;
     }
@@ -89,21 +88,35 @@ async fn load_metadata(hash: &str, storage: &impl Storage) -> Result<Metadata> {
     Ok(serde_json::from_slice(&read_stream(metadata_bytes).await?)?)
 }
 
+async fn create_iroh_endpoint() -> Result<(
+    iroh_blobs::net_protocol::Blobs<iroh_blobs::store::mem::Store>,
+    Router,
+)> {
+    let endpoint = iroh::Endpoint::builder().bind().await?;
+    let blobs = iroh_blobs::net_protocol::Blobs::memory().build(&endpoint);
+    let router = Router::builder(endpoint)
+        .accept(iroh_blobs::ALPN, blobs.clone())
+        .spawn()
+        .await?;
+
+    Ok((blobs, router))
+}
+
 #[tokio::test]
 async fn test_upload_bytes_to_iroh() -> Result<()> {
-    let node = iroh::node::Node::memory().spawn().await?;
-    let ent = new_entangler_from_node(&node)?;
+    let (blobs, _router) = create_iroh_endpoint().await?;
+    let ent = new_entangler_from_client(blobs.client())?;
 
     let bytes = create_bytes(NUM_CHUNKS);
     let byte_stream = bytes_to_stream(bytes.clone());
     let result = ent.upload(byte_stream).await?;
 
-    let data_hash = iroh::blobs::Hash::from_str(&result.orig_hash)?;
-    let res = node.blobs().read_to_bytes(data_hash).await?;
+    let data_hash = iroh_blobs::Hash::from_str(&result.orig_hash)?;
+    let res = blobs.client().read_to_bytes(data_hash).await?;
     assert_eq!(res, bytes, "original data mismatch");
 
-    let metadata_hash = iroh::blobs::Hash::from_str(&result.metadata_hash)?;
-    let metadata_bytes = node.blobs().read_to_bytes(metadata_hash).await?;
+    let metadata_hash = iroh_blobs::Hash::from_str(&result.metadata_hash)?;
+    let metadata_bytes = blobs.client().read_to_bytes(metadata_hash).await?;
 
     let metadata: Metadata = serde_json::from_slice(&metadata_bytes)?;
     assert_eq!(
@@ -128,8 +141,8 @@ async fn test_upload_bytes_to_iroh() -> Result<()> {
     for index in 0..metadata.parity_hashes.len() {
         let parity_hash_str = &metadata.parity_hashes[index];
         let strand_type = StrandType::try_from_index(index).unwrap();
-        let parity_hash = iroh::blobs::Hash::from_str(parity_hash_str)?;
-        let parity = node.blobs().read_to_bytes(parity_hash).await?;
+        let parity_hash = iroh_blobs::Hash::from_str(parity_hash_str)?;
+        let parity = blobs.client().read_to_bytes(parity_hash).await?;
         let mut expected_parity =
             BytesMut::with_capacity(NUM_CHUNKS as usize * CHUNK_SIZE as usize);
         for i in 0..NUM_CHUNKS as usize {
@@ -154,8 +167,9 @@ async fn test_upload_bytes_to_iroh() -> Result<()> {
 
 #[tokio::test]
 async fn test_download_bytes_from_iroh() -> Result<()> {
-    let node = iroh::node::Node::memory().spawn().await?;
-    let ent = new_entangler_from_node(&node)?;
+    let (blobs, _router) = create_iroh_endpoint().await?;
+
+    let ent = new_entangler_from_client(blobs.client())?;
 
     let bytes = create_bytes(NUM_CHUNKS);
     let byte_stream = bytes_to_stream(bytes.clone());
@@ -169,17 +183,24 @@ async fn test_download_bytes_from_iroh() -> Result<()> {
 
 #[tokio::test]
 async fn if_blob_is_missing_and_no_provided_metadata_error() -> Result<()> {
-    let node = iroh::node::Node::memory().spawn().await?;
-    let ent = new_entangler_from_node(&node)?;
+    let (blobs, router) = create_iroh_endpoint().await?;
+
+    let ent = new_entangler_from_client(blobs.client())?;
 
     let bytes = create_bytes(NUM_CHUNKS);
     let byte_stream = bytes_to_stream(bytes.clone());
     let result = ent.upload(byte_stream).await?;
 
-    let node_with_metadata = iroh::node::Node::memory().spawn().await?;
-    load_parity_data_to_node(&node_with_metadata, &node, &result.metadata_hash).await?;
+    let (blobs_with_metadata, _router) = create_iroh_endpoint().await?;
 
-    let ent_with_metadata = new_entangler_from_node(&node_with_metadata)?;
+    load_parity_data_to_node(
+        blobs_with_metadata.client(),
+        router.endpoint().node_addr().await?,
+        &result.metadata_hash,
+    )
+    .await?;
+
+    let ent_with_metadata = new_entangler_from_client(blobs_with_metadata.client())?;
 
     let download_result = ent_with_metadata.download(&result.orig_hash, None).await;
     assert!(download_result.is_err(), "expected download to fail");
@@ -188,17 +209,22 @@ async fn if_blob_is_missing_and_no_provided_metadata_error() -> Result<()> {
 
 #[tokio::test]
 async fn if_blob_is_missing_and_metadata_is_provided_error() -> Result<()> {
-    let node = iroh::node::Node::memory().spawn().await?;
-    let ent = new_entangler_from_node(&node)?;
+    let (blobs, router) = create_iroh_endpoint().await?;
+    let ent = new_entangler_from_client(blobs.client())?;
 
     let bytes = create_bytes(NUM_CHUNKS);
     let byte_stream = bytes_to_stream(bytes.clone());
     let result = ent.upload(byte_stream).await?;
 
-    let node_with_metadata = iroh::node::Node::memory().spawn().await?;
-    load_parity_data_to_node(&node_with_metadata, &node, &result.metadata_hash).await?;
+    let (blobs_with_metadata, _router) = create_iroh_endpoint().await?;
 
-    let ent_with_metadata = new_entangler_from_node(&node_with_metadata)?;
+    load_parity_data_to_node(
+        blobs_with_metadata.client(),
+        router.endpoint().node_addr().await?,
+        &result.metadata_hash,
+    )
+    .await?;
+    let ent_with_metadata = new_entangler_from_client(blobs_with_metadata.client())?;
 
     let download_result = ent_with_metadata
         .download(&result.orig_hash, Some(&result.metadata_hash))

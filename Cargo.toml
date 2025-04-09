@@ -29,7 +29,8 @@ clap = { version = "4.1.14", features = [
     "unicode",
 ] }
 clap-stdin = { version = "0.6.0", features = ["tokio"] }
-iroh = "0.28.1"
+iroh = "0.34"
+iroh-blobs = { version = "0.34", features = ["rpc"]}
 futures = "0.3.17"
 futures-lite = "2.5.0"
 serde = { version = "1.0.197", features = ["derive"] }
@@ -38,3 +39,6 @@ stderrlog = "0.6.0"
 thiserror = "2.0.4"
 tokio = { version = "1.37.0", features = ["fs", "macros", "rt-multi-thread"] }
 uuid = { version = "1.15.1", features = ["v4" ] }
+
+[patch.crates-io]
+iroh-blobs = { git = "https://github.com/n0-computer/iroh-blobs", branch = "allow-boxed-client" }
