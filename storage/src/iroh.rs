@@ -4,17 +4,14 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use bytes::Bytes;
-use core::net::SocketAddr;
 use futures::stream;
 use futures_lite::{Stream, StreamExt};
-use iroh::{
-    blobs::{util::SetTagOption, Hash},
-    client::{
-        blobs::{BlobStatus, ReadAtLen},
-        Iroh as Client,
-    },
-};
-use std::sync::Arc;
+use iroh::protocol::Router;
+use iroh::Endpoint;
+use iroh_blobs::net_protocol::Blobs;
+use iroh_blobs::rpc::client::blobs::{BlobStatus, Client as BlobsClient, MemClient, ReadAtLen};
+use iroh_blobs::util::SetTagOption;
+use iroh_blobs::{Hash, Tag};
 use std::{path::Path, str::FromStr};
 use uuid::Uuid;
 
@@ -24,99 +21,83 @@ use crate::storage::{
 
 const CHUNK_SIZE: u64 = 1024;
 
-/// `ClientProvider` is a trait for types that can provide an Iroh client.
-trait ClientProvider: Send + Sync {
-    fn client(&self) -> &Client;
-}
-
 /// `IrohStorage` is a storage backend that interacts with the Iroh client to store and retrieve data.
 /// It supports various initialization methods, including in-memory and persistent storage, and can
 /// upload and download data in chunks.
 ///
 /// Upon upload a blob it will include in the `UploadResult::info` under "tag" key the tag of the
 /// blob that iroh assigned to the blob with `SetTagOption::Auto`.
-pub struct IrohStorage {
-    client_provider: Arc<dyn ClientProvider>,
+#[derive(Debug, Clone)]
+pub enum IrohStorage {
+    Full {
+        router: Router,
+        blobs: BlobsWrapper,
+        client: BlobsClient,
+    },
+    Client {
+        blobs_client: BlobsClient,
+    },
 }
 
-impl Clone for IrohStorage {
-    fn clone(&self) -> Self {
-        IrohStorage {
-            client_provider: Arc::clone(&self.client_provider),
-        }
-    }
+#[derive(Debug, Clone)]
+pub enum BlobsWrapper {
+    Mem(Blobs<iroh_blobs::store::mem::Store>),
+    Fs(Blobs<iroh_blobs::store::fs::Store>),
 }
 
-/// `ClientHolder` is a wrapper around an Iroh client that implements `ClientProvider`.
-#[derive(Clone)]
-struct ClientHolder {
-    client: Client,
-}
-
-impl ClientProvider for ClientHolder {
-    fn client(&self) -> &Client {
-        &self.client
-    }
-}
-
-/// `NodeHolder` is a wrapper around an Iroh node that implements `ClientProvider`.
-struct NodeHolder<S> {
-    node: iroh::node::Node<S>,
-}
-
-impl<S: iroh::blobs::store::Store> ClientProvider for NodeHolder<S> {
-    fn client(&self) -> &Client {
-        self.node.client()
-    }
-}
-
-impl<S: Clone> Clone for NodeHolder<S> {
-    fn clone(&self) -> Self {
-        NodeHolder {
-            node: self.node.clone(),
+impl BlobsWrapper {
+    pub fn client(&self) -> &MemClient {
+        match self {
+            BlobsWrapper::Mem(b) => b.client(),
+            BlobsWrapper::Fs(b) => b.client(),
         }
     }
 }
 
 impl IrohStorage {
-    pub async fn from_path(root: impl AsRef<Path>) -> Result<Self> {
-        let client = Client::connect_path(root).await?;
-        Ok(Self {
-            client_provider: Arc::new(ClientHolder { client }),
-        })
-    }
-
-    pub async fn from_addr(addr: SocketAddr) -> Result<Self> {
-        let client = Client::connect_addr(addr).await?;
-        Ok(Self {
-            client_provider: Arc::new(ClientHolder { client }),
-        })
-    }
-
-    pub fn from_client(client: Client) -> Self {
-        Self {
-            client_provider: Arc::new(ClientHolder { client }),
-        }
-    }
-
-    pub fn from_node<S: iroh::blobs::store::Store + 'static>(node: iroh::node::Node<S>) -> Self {
-        Self {
-            client_provider: Arc::new(NodeHolder { node }),
-        }
+    pub fn from_client(blobs_client: BlobsClient) -> Self {
+        Self::Client { blobs_client }
     }
 
     pub async fn new_in_memory() -> Result<Self> {
-        let node = iroh::node::Node::memory().spawn().await?;
-        Ok(Self::from_node(node))
+        let endpoint = Endpoint::builder().discovery_n0().bind().await?;
+        let blobs = Blobs::memory().build(&endpoint);
+        let router = Router::builder(endpoint)
+            .accept(iroh_blobs::ALPN, blobs.clone())
+            .spawn()
+            .await?;
+
+        let client = blobs.client().boxed();
+
+        Ok(Self::Full {
+            router,
+            blobs: BlobsWrapper::Mem(blobs),
+            client,
+        })
     }
 
     pub async fn new_permanent(root: impl AsRef<Path>) -> Result<Self> {
-        let node = iroh::node::Node::persistent(root).await?.spawn().await?;
-        Ok(Self::from_client(node.client().clone()))
+        let endpoint = Endpoint::builder().discovery_n0().bind().await?;
+        let blobs = Blobs::persistent(root).await?.build(&endpoint);
+        let router = Router::builder(endpoint)
+            .accept(iroh_blobs::ALPN, blobs.clone())
+            .spawn()
+            .await?;
+
+        let client = blobs.client().boxed();
+
+        Ok(Self::Full {
+            router,
+            blobs: BlobsWrapper::Fs(blobs),
+            client,
+        })
     }
 
-    fn client(&self) -> &Client {
-        self.client_provider.client()
+    pub fn blobs_client(&self) -> &BlobsClient {
+        match self {
+            Self::Full { ref client, .. } => client,
+            Self::Client { blobs_client } => blobs_client,
+        }
     }
 }
 
@@ -175,12 +156,8 @@ impl Storage for IrohStorage {
         let tag = format!("ent-{}", Uuid::new_v4());
 
         let progress = self
-            .client()
-            .blobs()
-            .add_stream(
-                iroh_stream,
-                SetTagOption::Named(iroh::blobs::Tag::from(tag.clone())),
-            )
+            .blobs_client()
+            .add_stream(iroh_stream, SetTagOption::Named(Tag::from(tag.clone())))
             .await
             .map_err(|e| StorageError::StorageError(storage::wrap_error(e)))?;
 
@@ -203,8 +180,7 @@ impl Storage for IrohStorage {
         let hash = parse_hash(hash)?;
 
         let reader = self
-            .client()
-            .blobs()
+            .blobs_client()
             .read(hash)
             .await
             .map_err(|e| StorageError::StorageError(storage::wrap_error(e)))?;
@@ -217,7 +193,7 @@ impl Storage for IrohStorage {
 
     async fn iter_chunks(&self, hash: &str) -> Result<ChunkStream<Self::ChunkId>, StorageError> {
         let hash = parse_hash(hash)?;
-        let reader = self.client().blobs().read(hash).await.map_err(|e| {
+        let reader = self.blobs_client().read(hash).await.map_err(|e| {
             let err_str = e.to_string();
             if err_str.contains("not found") {
                 StorageError::BlobNotFound(hash.to_string())
@@ -228,7 +204,7 @@ impl Storage for IrohStorage {
         let total_size = reader.size();
 
         let stream = stream::unfold(
-            (self.client().blobs().clone(), 0u64),
+            (self.blobs_client().clone(), 0u64),
             move |(client, offset)| async move {
                 if offset >= total_size {
                     return None;
@@ -266,8 +242,7 @@ impl Storage for IrohStorage {
         let hash = parse_hash(hash)?;
         let offset = chunk_id * CHUNK_SIZE;
 
-        self.client()
-            .blobs()
+        self.blobs_client()
             .read_at_to_bytes(hash, offset, ReadAtLen::AtMost(CHUNK_SIZE))
             .await
             .map_err(|e| {
@@ -282,8 +257,7 @@ impl Storage for IrohStorage {
     async fn chunk_id_mapper(&self, hash: &str) -> Result<IrohChunkIdMapper, StorageError> {
         let hash = parse_hash(hash).map_err(|_| StorageError::BlobNotFound(hash.to_string()))?;
         let reader = self
-            .client()
-            .blobs()
+            .blobs_client()
             .read(hash)
             .await
             .map_err(|_| StorageError::BlobNotFound(hash.to_string()))?;
@@ -297,7 +271,7 @@ impl Storage for IrohStorage {
     async fn get_blob_size(&self, hash: &str) -> Result<u64, StorageError> {
         let hash = parse_hash(hash)?;
 
-        let status = self.client().blobs().status(hash).await.map_err(|e| {
+        let status = self.blobs_client().status(hash).await.map_err(|e| {
             let err_str = e.to_string();
             if err_str.contains("not found") {
                 StorageError::BlobNotFound(hash.to_string())

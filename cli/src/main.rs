@@ -5,12 +5,11 @@
 ///
 /// The application supports uploading and downloading files using the Entangler library.
 /// It uses the `clap` crate for command-line argument parsing and `stderrlog` for logging.
-use std::net::SocketAddr;
+use std::path::PathBuf;
 
 use bytes::Bytes;
 use clap::{Args, Parser, Subcommand};
 use futures::{StreamExt, TryStreamExt};
-use std::str::FromStr;
 use stderrlog::Timestamp;
 use tokio::{fs::File, io};
 use tokio_util::io::ReaderStream;
@@ -25,10 +24,7 @@ pub struct Cli {
     command: Commands,
 
     #[arg(long, env)]
-    iroh_path: Option<String>,
-
-    #[arg(long, env)]
-    iroh_addr: Option<String>,
+    iroh_path: PathBuf,
 }
 
 #[derive(Subcommand)]
@@ -40,17 +36,6 @@ enum Commands {
 #[derive(Debug, Clone, PartialEq, Eq, clap::ValueEnum)]
 enum StorageType {
     Iroh,
-}
-
-impl Cli {
-    fn get_storage_config(&self) -> Result<StorageConfig, ConfigError> {
-        match (self.iroh_path.as_ref(), self.iroh_addr.as_ref()) {
-            (Some(path), None) => Ok(StorageConfig::Iroh(IrohConfig::Path(path.clone()))),
-            (None, Some(addr)) => Ok(StorageConfig::Iroh(IrohConfig::Addr(addr.clone()))),
-            (None, None) => Err(ConfigError::MissingConfig),
-            _ => Err(ConfigError::ConflictingConfig),
-        }
-    }
 }
 
 #[derive(Args)]
@@ -67,25 +52,6 @@ struct DownloadArgs {
     metadata_hash: Option<String>,
     #[arg(short, long)]
     output: String,
-}
-
-#[derive(Debug, Clone)]
-enum StorageConfig {
-    Iroh(IrohConfig),
-}
-
-#[derive(Debug, Clone)]
-enum IrohConfig {
-    Path(String),
-    Addr(String),
-}
-
-#[derive(Debug, thiserror::Error)]
-enum ConfigError {
-    #[error("Missing storage configuration")]
-    MissingConfig,
-    #[error("Conflicting storage configuration options provided")]
-    ConflictingConfig,
 }
 
 async fn write_stream_to_file(mut stream: ByteStream, path: &str) -> anyhow::Result<()> {
@@ -110,17 +76,7 @@ async fn main() -> anyhow::Result<()> {
         .init()
         .unwrap();
 
-    let storage_config = cli.get_storage_config()?;
-
-    let StorageConfig::Iroh(iroh_config) = storage_config;
-
-    let storage = match iroh_config {
-        IrohConfig::Path(path) => IrohStorage::from_path(path).await?,
-        IrohConfig::Addr(addr) => {
-            let socket_addr = SocketAddr::from_str(&addr)?;
-            IrohStorage::from_addr(socket_addr).await?
-        }
-    };
+    let storage = IrohStorage::new_permanent(cli.iroh_path).await?;
 
     let entangler = Entangler::new(storage, Config::new(3, 3))?;
 
