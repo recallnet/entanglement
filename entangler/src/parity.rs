@@ -1,7 +1,8 @@
 // Copyright 2024 Entanglement Contributors
 // SPDX-License-Identifier: Apache-2.0, MIT
 
-use crate::grid::{Dir, Grid, Pos};
+use crate::grid::{Dir, Pos};
+use core::fmt;
 use serde::{Deserialize, Serialize};
 use std;
 
@@ -13,6 +14,12 @@ pub enum StrandType {
     Left,
     Horizontal,
     Right,
+}
+
+impl fmt::Display for StrandType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
 }
 
 impl StrandType {
@@ -51,6 +58,16 @@ impl StrandType {
     /// Returns the opposite (backward) direction of the current strand.
     pub fn to_opposite_dir(self) -> Dir {
         Dir::from(self).opposite()
+    }
+
+    /// Returns a list of strand types of a given size.
+    pub fn list(size: usize) -> Option<Vec<Self>> {
+        match size {
+            1 => Some(vec![Self::Left]),
+            2 => Some(vec![Self::Left, Self::Horizontal]),
+            3 => Some(vec![Self::Left, Self::Horizontal, Self::Right]),
+            _ => None,
+        }
     }
 }
 
@@ -121,10 +138,4 @@ impl std::ops::SubAssign<StrandType> for Pos {
         self.x -= 1;
         self.y -= rhs.to_i64();
     }
-}
-
-/// A grid with a strand type.
-pub struct ParityGrid {
-    pub grid: Grid,
-    pub strand_type: StrandType,
 }

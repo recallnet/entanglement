@@ -22,15 +22,20 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = { workspace = true }
 
 recall_entangler_storage = { version = "0.1.0", path = "../storage", features = [] }
 
 [dev-dependencies]
 recall_entangler_storage = { path = "../storage", features = ["mock"] }
-
-[lib]
-doctest = false
+jemallocator = "0.5"
+jemalloc-ctl = "0.5"
+tokio-util = { version = "0.7", features = ["io"] }
 
 [[test]]
 name = "entangler_integration_tests"
 path = "tests/entangler_test.rs"
+
+[[test]]
+name = "entangler_performance_tests"
+path = "tests/performance_test.rs"

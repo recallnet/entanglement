@@ -78,7 +78,7 @@ async fn main() -> anyhow::Result<()> {
 
     let storage = IrohStorage::new_permanent(cli.iroh_path).await?;
 
-    let entangler = Entangler::new(storage, Config::new(3, 3, 3))?;
+    let entangler = Entangler::new(storage, Config::new(3, 3))?;
 
     match cli.command {
         Commands::Upload(args) => {

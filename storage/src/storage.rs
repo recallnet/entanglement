@@ -144,4 +144,15 @@ pub trait Storage: Send + Sync + Clone {
     ///
     /// A `Result` containing a chunk id mapper, or an `Error` if the operation fails.
     async fn chunk_id_mapper(&self, hash: &str) -> Result<Self::ChunkIdMapper, Error>;
+
+    /// Returns the size of the blob identified by the given hash.
+    ///
+    /// # Arguments
+    ///
+    /// * `hash` - The hash identifying the blob.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing the size of the blob in bytes, or an `Error` if the operation fails.
+    async fn get_blob_size(&self, hash: &str) -> Result<u64, Error>;
 }

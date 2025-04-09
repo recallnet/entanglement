@@ -75,8 +75,8 @@ impl<'a, S: Storage> Repairer<'a, S> {
             self.storage.clone(),
             self.metadata.clone(),
             sick_nodes,
-            self.positioner.height,
-            self.positioner.num_items,
+            self.positioner.get_height(),
+            self.positioner.get_num_items(),
             self.mapper.clone(),
         );
 

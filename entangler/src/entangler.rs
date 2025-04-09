@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::pin::Pin;
 
 use crate::executer;
-use crate::grid::{Grid, Positioner};
+use crate::grid::Positioner;
 use crate::repairer::{self, Repairer};
 use crate::stream::{RepairingChunkStream, RepairingStream};
 use crate::Config;
@@ -46,6 +46,9 @@ pub enum Error {
 
     #[error("Failed to parse metadata: {0}")]
     ParsingMetadata(#[from] serde_json::Error),
+
+    #[error("Error during entanglement execution: {0}")]
+    Execution(#[from] executer::Error),
 
     #[error("Error occurred: {0}")]
     Other(#[from] anyhow::Error),
@@ -103,14 +106,12 @@ impl ChunkRange {
 }
 
 impl<T: Storage> Entangler<T> {
-    /// Creates a new `Entangler` instance with the given storage backend, alpha, s, and p parameters.
+    /// Creates a new `Entangler` instance with the given storage backend and configuration.
     ///
     /// # Arguments
     ///
     /// * `storage` - The storage backend to use.
-    /// * `alpha` - The number of parity chunks to generate for each data chunk.
-    /// * `s` - The number of horizontal strands in the grid.
-    /// * `p` - The number of helical strands in the grid.
+    /// * `conf` - The configuration to use.
     ///
     /// # Returns
     ///
@@ -118,17 +119,11 @@ impl<T: Storage> Entangler<T> {
     ///
     /// See also [storage]
     pub fn new(storage: T, conf: Config) -> Result<Self, Error> {
-        if conf.alpha == 0 || conf.s == 0 {
+        if conf.alpha == 0 || conf.alpha > 3 || conf.s == 0 {
             return Err(Error::InvalidEntanglementParameter(
-                (if conf.alpha == 0 { "alpha" } else { "s" }).to_string(),
-                if conf.alpha == 0 { conf.alpha } else { conf.s },
+                (if conf.s == 0 { "s" } else { "alpha" }).to_string(),
+                if conf.s == 0 { conf.s } else { conf.alpha },
             ));
-        }
-        // at the moment it's not clear how to take a helical strand around the cylinder so that
-        // it completes a revolution after LW on the same horizontal strand. That's why
-        // p should be a multiple of s.
-        if conf.p != 0 && (conf.p < conf.s || conf.p % conf.s != 0) {
-            return Err(Error::InvalidEntanglementParameter("p".to_string(), conf.p));
         }
         Ok(Self {
             storage,
@@ -157,51 +152,49 @@ impl<T: Storage> Entangler<T> {
         let orig_upload_result = self.storage.upload_bytes(stream).await?;
         upload_results.push(orig_upload_result.clone());
 
-        // Download the data we just uploaded to process it for parity generation
-        let downloaded_stream = self
-            .storage
-            .download_bytes(&orig_upload_result.hash)
+        let mut entanglement_result = self
+            .entangle_uploaded(orig_upload_result.hash.clone())
             .await?;
-        let bytes = read_stream(downloaded_stream).await?;
-
-        let (metadata_hash, parity_results) = self
-            .entangle(bytes, orig_upload_result.hash.clone())
-            .await?;
-        upload_results.extend(parity_results);
-
-        Ok(EntanglementResult {
-            orig_hash: orig_upload_result.hash,
-            metadata_hash,
-            upload_results,
-        })
+        entanglement_result
+            .upload_results
+            .insert(0, orig_upload_result);
+        Ok(entanglement_result)
     }
 
     /// Creates entangled parity blobs for the given data and uploads them to the storage backend.
-    /// The original data is also uploaded to the storage backend.
     /// Returns the hash of the metadata and the upload results for parity blobs and metadata.
-    async fn entangle(&self, bytes: Bytes, hash: String) -> Result<(String, Vec<UploadResult>)> {
-        let num_bytes = bytes.len();
+    async fn entangle<S, E>(&self, stream: S, hash: String) -> Result<(String, Vec<UploadResult>)>
+    where
+        S: Stream<Item = Result<Bytes, E>> + Send + Unpin + 'static,
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        let executer =
+            executer::Executer::from_config(&self.config).with_chunk_size(CHUNK_SIZE as usize);
 
-        let chunks = bytes_to_chunks(bytes, CHUNK_SIZE);
-        let num_chunks = chunks.len() as u64;
-
-        let orig_grid = Grid::new(chunks, u64::min(self.config.s as u64, num_chunks))?;
-
-        let exec = executer::Executer::new(self.config.alpha);
+        let parity_streams = executer.entangle(stream).await?;
 
         let mut parity_hashes = Vec::new();
         let mut upload_results = Vec::new();
 
-        for parity_grid in exec.iter_parities(orig_grid) {
-            let data = parity_grid.grid.assemble_data();
-            let upload_result = self.storage.upload_bytes(bytes_to_stream(data)).await?;
+        // Upload each parity stream concurrently
+        let mut upload_tasks = Vec::new();
+        for stream in parity_streams {
+            let storage = self.storage.clone();
+            let task = tokio::spawn(async move { storage.upload_bytes(stream).await });
+            upload_tasks.push(task);
+        }
+
+        // Wait for all uploads to complete
+        for task in upload_tasks {
+            let upload_result = task.await.map_err(|e| Error::Other(e.into()))??;
             parity_hashes.push(upload_result.hash.clone());
             upload_results.push(upload_result);
         }
 
+        let num_bytes = self.storage.get_blob_size(&hash).await?;
         let metadata = Metadata {
-            orig_hash: hash.clone(),
-            num_bytes: num_bytes as u64,
+            orig_hash: hash,
+            num_bytes,
             parity_hashes,
             chunk_size: CHUNK_SIZE,
             s: self.config.s,
@@ -230,8 +223,7 @@ impl<T: Storage> Entangler<T> {
     /// and all upload results (parity blobs and metadata blob).
     pub async fn entangle_uploaded(&self, hash: String) -> Result<EntanglementResult> {
         let orig_data_stream = self.storage.download_bytes(&hash).await?;
-        let bytes = read_stream(orig_data_stream).await?;
-        let (metadata_hash, upload_results) = self.entangle(bytes, hash.clone()).await?;
+        let (metadata_hash, upload_results) = self.entangle(orig_data_stream, hash.clone()).await?;
 
         Ok(EntanglementResult {
             orig_hash: hash,
@@ -483,31 +475,6 @@ fn bytes_to_stream(bytes: Bytes) -> ByteStream {
     ))
 }
 
-fn bytes_to_chunks(bytes: Bytes, chunk_size: u64) -> Vec<Bytes> {
-    let chunk_size = chunk_size as usize;
-    let mut chunks = Vec::with_capacity(bytes.len().div_ceil(chunk_size));
-    let mut start = 0;
-
-    while start < bytes.len() {
-        let end = std::cmp::min(start + chunk_size, bytes.len());
-        chunks.push(bytes.slice(start..end));
-        start = end;
-    }
-
-    // if last chunk is smaller than chunk_size, add padding
-    if let Some(last_chunk) = chunks.last_mut() {
-        *last_chunk = add_padding(last_chunk, chunk_size);
-    }
-
-    chunks
-}
-
-fn add_padding(chunk: &Bytes, chunk_size: usize) -> Bytes {
-    let mut chunk = chunk.to_vec();
-    chunk.resize(chunk_size, 0);
-    Bytes::from(chunk)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -516,7 +483,7 @@ mod tests {
     #[test]
     fn test_entangler_new_valid_parameters() {
         let storage = DummyStorage;
-        let result = Entangler::new(storage, Config::new(3, 2, 4));
+        let result = Entangler::new(storage, Config::new(3, 2));
         assert!(result.is_ok());
         let entangler = result.unwrap();
         assert_eq!(entangler.config.alpha, 3);
@@ -526,7 +493,7 @@ mod tests {
     #[test]
     fn test_entangler_new_alpha_zero() {
         let storage = DummyStorage;
-        let result = Entangler::new(storage, Config::new(0, 2, 4));
+        let result = Entangler::new(storage, Config::new(0, 2));
         assert!(result.is_err());
         assert!(matches!(
             result.err().unwrap(),
@@ -535,56 +502,25 @@ mod tests {
     }
 
     #[test]
+    fn test_entangler_new_alpha_too_large() {
+        let storage = DummyStorage;
+        let result = Entangler::new(storage, Config::new(4, 2));
+        assert!(result.is_err());
+        assert!(matches!(
+            result.err().unwrap(),
+            Error::InvalidEntanglementParameter(param, value) if param == "alpha" && value == 4
+        ));
+    }
+
+    #[test]
     fn test_entangler_new_s_zero() {
         let storage = DummyStorage;
-        let result = Entangler::new(storage, Config::new(3, 0, 4));
+        let result = Entangler::new(storage, Config::new(3, 0));
         assert!(result.is_err());
         assert!(matches!(
             result.err().unwrap(),
             Error::InvalidEntanglementParameter(param, value) if param == "s" && value == 0
         ));
-    }
-
-    #[test]
-    fn test_entangler_new_p_less_than_s() {
-        let storage = DummyStorage;
-        let result = Entangler::new(storage, Config::new(3, 4, 2));
-        assert!(result.is_err());
-        assert!(matches!(
-            result.err().unwrap(),
-            Error::InvalidEntanglementParameter(param, value) if param == "p" && value == 2
-        ));
-    }
-
-    #[test]
-    fn test_entangler_new_p_not_multiple_of_s() {
-        let storage = DummyStorage;
-        let result = Entangler::new(storage, Config::new(3, 3, 7));
-        assert!(result.is_err());
-        assert!(matches!(
-            result.err().unwrap(),
-            Error::InvalidEntanglementParameter(param, value) if param == "p" && value == 7
-        ));
-    }
-
-    #[test]
-    fn test_entangler_new_p_zero() {
-        let storage = DummyStorage;
-        let result = Entangler::new(storage, Config::new(3, 2, 0));
-        assert!(result.is_ok());
-        let entangler = result.unwrap();
-        assert_eq!(entangler.config.alpha, 3);
-        assert_eq!(entangler.config.s, 2);
-    }
-
-    #[test]
-    fn test_entangler_new_p_valid_multiple_of_s() {
-        let storage = DummyStorage;
-        let result = Entangler::new(storage, Config::new(3, 2, 6));
-        assert!(result.is_ok());
-        let entangler = result.unwrap();
-        assert_eq!(entangler.config.alpha, 3);
-        assert_eq!(entangler.config.s, 2);
     }
 
     #[tokio::test]
@@ -622,7 +558,7 @@ mod tests {
         let json = serde_json::json!(metadata).to_string();
         storage.stub_download_bytes(Some(m_hash.clone()), Ok(Bytes::from(json)));
 
-        let entangler = Entangler::new(storage.clone(), Config::new(3, 3, 3)).unwrap();
+        let entangler = Entangler::new(storage.clone(), Config::new(3, 3)).unwrap();
 
         let result = entangler.download(&hash, Some(&m_hash)).await;
         assert!(result.is_ok());
