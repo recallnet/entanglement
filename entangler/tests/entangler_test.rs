@@ -96,8 +96,7 @@ async fn create_iroh_endpoint() -> Result<(
     let blobs = iroh_blobs::net_protocol::Blobs::memory().build(&endpoint);
     let router = Router::builder(endpoint)
         .accept(iroh_blobs::ALPN, blobs.clone())
-        .spawn()
-        .await?;
+        .spawn();
 
     Ok((blobs, router))
 }

@@ -364,7 +364,7 @@ mod tests {
         let error_stream = stream::iter(vec![
             Ok(Bytes::from(vec![1, 2, 3, 4])),
             Ok(Bytes::from(vec![5, 6, 7, 8])),
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "test error")),
+            Err(std::io::Error::other("test error")),
         ]);
 
         let executer = Executer::from_config(&Config::new(1, 1)).with_chunk_size(4);
@@ -646,7 +646,7 @@ mod tests {
         let input_data = vec![
             Ok(Bytes::from(vec![1, 2, 3, 4, 5, 6, 7, 8])),
             Ok(Bytes::from(vec![9, 10, 11, 12, 13, 14, 15, 16])),
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "test error")),
+            Err(std::io::Error::other("test error")),
         ];
 
         let input_stream = stream::iter(input_data);

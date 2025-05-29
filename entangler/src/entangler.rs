@@ -415,10 +415,8 @@ impl<T: Storage> Entangler<T> {
                     }
                 }));
 
-                let upload_stream = chunk_stream.map(|result| {
-                    result
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-                });
+                let upload_stream = chunk_stream
+                    .map(|result| result.map_err(|e| std::io::Error::other(e.to_string())));
 
                 self.storage.upload_bytes(upload_stream).await?;
 
