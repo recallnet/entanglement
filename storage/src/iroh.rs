@@ -64,8 +64,7 @@ impl IrohStorage {
         let blobs = Blobs::memory().build(&endpoint);
         let router = Router::builder(endpoint)
             .accept(iroh_blobs::ALPN, blobs.clone())
-            .spawn()
-            .await?;
+            .spawn();
 
         let client = blobs.client().boxed();
 
@@ -81,8 +80,7 @@ impl IrohStorage {
         let blobs = Blobs::persistent(root).await?.build(&endpoint);
         let router = Router::builder(endpoint)
             .accept(iroh_blobs::ALPN, blobs.clone())
-            .spawn()
-            .await?;
+            .spawn();
 
         let client = blobs.client().boxed();
 
@@ -150,7 +148,7 @@ impl Storage for IrohStorage {
         use futures::TryStreamExt;
 
         let iroh_stream = stream
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+            .map_err(|e| std::io::Error::other(e.to_string()))
             .map_ok(|bytes| bytes);
 
         let tag = format!("ent-{}", Uuid::new_v4());
@@ -220,7 +218,7 @@ impl Storage for IrohStorage {
                         .await
                     {
                         Ok(chunk) => {
-                            let new_offset = offset + len as u64;
+                            let new_offset = offset + len;
                             ((chunk_id, Ok(chunk)), (client, new_offset))
                         }
                         Err(e) => (
@@ -228,7 +226,7 @@ impl Storage for IrohStorage {
                                 chunk_id,
                                 Err(StorageError::StorageError(storage::wrap_error(e))),
                             ),
-                            (client, offset + len as u64),
+                            (client, offset + len),
                         ),
                     },
                 )
